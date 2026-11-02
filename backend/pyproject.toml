@@ -9,7 +9,7 @@ description = "Config-driven ingest service: pluggable source adapters writing t
 requires-python = ">=3.14"
 license = "GPL-3.0-or-later"
 dependencies = [
-    "jigkit[influx,heartbeat]==0.6.0",
+    "jigkit[influx,heartbeat,notify]==0.6.0",
     "httpx2>=2.16",
     # The MQTT source.
     "aiomqtt>=2.5,<3",

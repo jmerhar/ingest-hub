@@ -37,7 +37,8 @@ def environment(monkeypatch, tmp_path):
     return tmp_path / "data"
 
 
-async def test_run_collects_until_sigterm(environment, secrets):
+@pytest.mark.parametrize("with_alerts", [True, False])
+async def test_run_collects_until_sigterm(environment, secrets, with_alerts):
     # The source fetches the last week by wall-clock time, so the report is an hour old.
     an_hour_ago = int(time.time() * 1000) - 3_600_000
     reports = {"dev-a": [{"code": "add_ele", "value": "70", "event_time": an_hour_ago}]}
@@ -45,7 +46,12 @@ async def test_run_collects_until_sigterm(environment, secrets):
         serving(StubServer(respond=influx)) as db,
         serving(StubServer(respond=tuya_cloud(DEVICES, reports))) as tuya,
     ):
-        write_config(environment / "config" / "sources.toml", db.url, tuya.url, secrets)
+        config = write_config(environment / "config" / "sources.toml", db.url, tuya.url, secrets)
+        # Alerts run beside the sources; nothing is wrong here, so nothing is sent.
+        (secrets / "alert_urls").write_text("json://127.0.0.1:9/alerts\n")
+        alerts = f'[alerts]\nurls_file = "{secrets / "alert_urls"}"\n'
+        if with_alerts:
+            config.write_text(alerts + config.read_text())
         task = asyncio.create_task(cli._run(Settings(), None))
         async with asyncio.timeout(10):
             while not any(r.path == "/api/v3/write_lp" and r.body for r in db.requests):
@@ -67,10 +73,15 @@ async def test_run_collects_until_sigterm(environment, secrets):
 
 
 async def test_check_reports_each_destination(environment, secrets, capsys):
+    (secrets / "alert_urls").write_text("json://localhost/alerts\n")
+    alerts = f'[alerts]\nurls_file = "{secrets / "alert_urls"}"\n'
     async with serving(StubServer(respond=influx)) as db:
-        write_config(environment / "config" / "sources.toml", db.url, "http://tuya", secrets)
+        config = write_config(environment / "config" / "sources.toml", db.url, "http://t", secrets)
+        config.write_text(alerts + config.read_text())
         assert await cli._check(Settings(), None) == 0
     out = capsys.readouterr().out
+    assert "alerts: 1 destination URL(s)" in out
+    assert "json://localhost" not in out
     assert "destination home: ok" in out
     assert "source plugs (tuya) -> home: configured" in out
 

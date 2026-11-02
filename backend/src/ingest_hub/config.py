@@ -31,6 +31,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from ingest_hub.alerts import AlertsConfig
+
 #: A source or destination name: it becomes a tag value, a directory name and a CLI argument.
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,62}")
 
@@ -72,6 +74,8 @@ class HubConfig(BaseModel):
 
     destinations: dict[str, DestinationConfig] = Field(default_factory=dict)
     sources: dict[str, SourceConfig] = Field(default_factory=dict)
+    #: Where alerts go and when they fire; no alerts when absent.
+    alerts: AlertsConfig | None = None
 
     @field_validator("destinations", "sources")
     @classmethod

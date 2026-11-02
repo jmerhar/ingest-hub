@@ -26,11 +26,13 @@ from typing import Any
 import httpx2
 from jigkit.influx import Influx3Sink, QueryError
 from jigkit.logging import configure_logging
+from jigkit.notify import AppriseSender
 from pydantic import ValidationError
 
 from ingest_hub import __version__
 from ingest_hub.adapters import tuya
 from ingest_hub.adapters.tuya.dump import DumpError, import_dump
+from ingest_hub.alerts import AlertMonitor, read_urls
 from ingest_hub.collect import Runtime
 from ingest_hub.compare import compare
 from ingest_hub.config import ConfigError, load_config
@@ -55,9 +57,20 @@ async def _run(settings: Settings, only: str | None) -> int:
         )
         names = ", ".join(spec.name for spec in built.specs)
         logger.info("ingest-hub %s collecting from %s", __version__, names)
-        await _until_signalled(runtime.run())
+        work = [runtime.run()]
+        if config.alerts is not None:
+            monitor = AlertMonitor(
+                config.alerts, read_urls(config.alerts.urls_file), AppriseSender(), runtime.snapshot
+            )
+            work.append(monitor.run())
+        await _until_signalled(_together(work))
     logger.info("stopped")
     return 0
+
+
+async def _together(work: list[Coroutine[Any, Any, None]]) -> None:
+    """Run coroutines side by side; cancelling this cancels them all."""
+    await asyncio.gather(*work)
 
 
 async def _until_signalled(work: Coroutine[Any, Any, None]) -> None:
@@ -87,6 +100,8 @@ async def _check(settings: Settings, only: str | None) -> int:
             await sink.aclose()
         for spec in built.specs:
             print(f"source {spec.name} ({spec.kind}) -> {spec.destination}: configured")
+        if config.alerts is not None:
+            print(f"alerts: {len(read_urls(config.alerts.urls_file))} destination URL(s)")
     return 1 if failed else 0
 
 
