@@ -138,8 +138,8 @@ make check       # lint and coverage, as CI runs them
 make help        # everything else
 ```
 
-Tests use synthetic devices and stand-in servers only. Nothing that names a real device, house,
-database, host or topic belongs in this repository.
+Tests use synthetic devices and stand-in servers only, so the suite needs no network access and
+no credentials.
 
 ## Licence
 

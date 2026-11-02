@@ -3,12 +3,19 @@
 A config-driven ingest service: source adapters write points through jigkit sinks. See README.md
 for behaviour and the data model.
 
-## Privacy
+## Data in the repository
 
-The repository is public. Never commit device IDs or names, house names, real database names,
-hostnames, MQTT topics with device names, push URLs or tokens, in code, tests, fixtures, examples,
-commit messages or history. Tests use synthetic data; examples use placeholders. The real
-configuration lives on the deployment host.
+Tests use synthetic data and stand-in servers; examples use placeholders. A deployment's
+configuration, credentials and collected data never belong in the repository: no real device
+identifiers, hostnames, topics, push URLs or tokens, in code, tests, fixtures, examples or commit
+messages.
+
+## Writing for readers of this repository
+
+Commit messages, comments and docs describe ingest-hub in its own terms. They make sense to
+someone who has only this repository and the public ones it links to, so they never refer to a
+particular installation, the system a deployment migrated from, or anything else a reader cannot
+see.
 
 ## Layout
 
@@ -20,8 +27,8 @@ configuration lives on the deployment host.
 
 ## jigkit
 
-jigkit is maintained in its own repository by a separate session. If something is missing or
-wrong there, report it to that session instead of patching jigkit or working around it here.
+jigkit is maintained in its own repository (github.com/jmerhar/jigkit). If something is missing
+or wrong there, fix it in jigkit and release it, rather than working around it here.
 
 ## Checks
 

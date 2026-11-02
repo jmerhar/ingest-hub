@@ -26,7 +26,8 @@ def test_canonical_sorts_query_parameters_by_name():
 
 
 def test_sign_matches_the_reference_implementation():
-    # Computed with the PHP client that has been calling Tuya in production.
+    # Computed independently from the signing rule for these inputs, so a change to how the
+    # path is canonicalised or signed fails here.
     path = "/v2.0/cloud/thing/dev1/report-logs?codes=a,b&end_time=2&size=100&start_time=1"
     assert sign("client-id", "secret-xyz", "token-abc", "1700000000000", path) == (
         "D8A42A4E3A2B41D8FD031DF9C4EFA3CB14ACF22EAB43694E7001636F1AAB2F5B"

@@ -4,7 +4,7 @@ __pycache__/
 *.egg-info/
 .venv/
 
-# Runtime state: config, spools, cursors, logs. The real source definitions are private.
+# Runtime state: a deployment's configuration, spools, cursors and logs.
 data/
 
 # Local overrides of the compose defaults

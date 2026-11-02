@@ -1,6 +1,6 @@
 # Only the backend's pyproject.toml and source are copied into the image. Everything else stays
-# out of the build context, which matters most for data/: the real configuration names private
-# sources, and the context is sent to the Docker daemon in full.
+# out of the build context, which matters most for data/: a deployment's configuration and state
+# have no place in the image, and the context is sent to the Docker daemon in full.
 *
 !backend/pyproject.toml
 !backend/src/
