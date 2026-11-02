@@ -1,0 +1,35 @@
+# An example configuration, with placeholders. The real one lives in the data directory
+# (data/config/sources.toml, or wherever CONFIG_FILE points) and is not part of this repository.
+#
+# Credentials are never written here: each is the path of a file holding it.
+
+# Where points go. Each destination is one database.
+[destinations.home]
+kind = "influx3"                    # or "influx2" (then also set org)
+url = "http://influxdb:8181"
+database = "example"
+token_file = "/run/secrets/influxdb_token"
+
+# A Tuya cloud project: every device's report log, one table per device category
+# (table_prefix + category, such as tuya_cz for plugs), tagged device_id and category.
+[sources.plugs]
+kind = "tuya"
+destination = "home"
+# Optional: a push monitor (such as Uptime Kuma) called after this source's points are written.
+heartbeat_url_file = "/run/secrets/plugs_heartbeat_url"
+# enabled = false                   # keeps it out of `ingest-hub run`; --only still runs it
+
+[sources.plugs.params]
+region = "eu"                       # eu, weu, us, cn or in
+access_id_file = "/run/secrets/tuya_access_id"
+access_secret_file = "/run/secrets/tuya_access_secret"
+# table_prefix = "tuya_"
+# devices = ["<device id>", ...]    # only these; every device when unset
+# unscaled_codes = ["add_ele"]      # integer codes stored without the specification's scale
+# poll_minutes = 15
+# lag_minutes = 60                  # progress stays this far behind each poll's start
+# overlap_minutes = 120             # each poll re-fetches this much before the cursor
+# rescan_hours = 48                 # ... and once every rescan_every_hours, this much
+# rescan_every_hours = 24
+# retention_days = 7                # how far back a new device is fetched
+# discover_hours = 6                # how often the device list is refreshed
