@@ -103,6 +103,26 @@ QoS 1 and 2 messages for the hub while it reconnects. A dropped connection resta
 after its back-off. MQTT sources write no `ingest_progress`: a pushed stream has no position to
 report.
 
+### Frank Energie prices
+
+`kind = "frank"` polls Frank Energie's public GraphQL `marketPrices` every `poll_hours` (6) for
+today and tomorrow (by UTC date): 15-minute periods from `quarter_hours_from` (1 Oct 2025),
+hourly before. One point per period in `table` (`electricity_price`), at the period's start, tags
+`market` (`power`) and `resolution`, all fields floats:
+
+| Field | |
+|---|---|
+| `market_price_excl_vat` | Frank's spot price |
+| `market_price_incl_vat` | spot + Frank's VAT on it |
+| `surcharge_incl_vat`, `energy_tax_incl_vat` | as Frank reports them |
+| `surcharge_excl_vat`, `energy_tax_excl_vat` | those ÷ (1 + `vat_rate`) |
+| `total_excl_vat` | spot + surcharge excl. + energy tax excl. |
+| `total_incl_vat` | Frank's all-in price |
+| `vat_rate` | the configured rate (0.21) |
+
+Tomorrow's prices appear in the afternoon; until then that day is skipped and logged, not an
+error.
+
 ## Replacing another writer
 
 Point a new source at a shadow table next to the one the old writer fills, run both, then

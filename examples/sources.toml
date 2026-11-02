@@ -60,3 +60,15 @@ tags = { device = "{0}" }          # {0}: the topic's first segment
 topic = "<meter name>/status/emdata:0"
 table = "meter_energy"
 tags = { device = "{0}" }
+
+# Frank Energie's public electricity market prices; no credentials needed.
+[sources.prices]
+kind = "frank"
+destination = "home"
+
+[sources.prices.params]
+# table = "electricity_price"
+# market = "power"                 # the market tag
+# vat_rate = 0.21
+# poll_hours = 6
+# quarter_hours_from = 2025-10-01  # 15-minute periods from this day, hourly before

@@ -9,6 +9,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 - An MQTT source: JSON messages on subscribed topics, routed to tables by topic filter, with
   tags from topic segments, numbers written as floats by default, and a persistent session.
+- A Frank Energie source: electricity market prices for today and tomorrow, with the
+  excluded-VAT parts derived at a fixed rate.
 - `ingest-hub compare`, which checks a shadow table against the table it is meant to reproduce.
 - The adapter runtime: one task per source with its own back-off, one spool and delivery per
   source, a heartbeat per source, and the `ingest_progress` table recording how far each stream
