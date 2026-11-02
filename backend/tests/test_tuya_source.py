@@ -71,12 +71,14 @@ class Harness:
         def on_success() -> None:
             self.successes += 1
 
+        self.restored: list[tuple[str, int]] = []
         self.context = SourceContext(
             "plugs",
             tmp_path,
             emit,
             on_success=on_success,
             on_problem=self.problems.append,
+            on_progress=lambda p: self.restored.append((p.stream, p.complete_until_ms)),
             clock=lambda: self.now_ms / 1000,
         )
 
@@ -258,6 +260,19 @@ async def test_run_polls_reports_success_and_sleeps(tmp_path):
     with pytest.raises(SystemExit):
         await TuyaSource(params(poll_minutes=10), FakeClient([PLUG])).run(harness.context)
     assert harness.successes == 1 and sleeps == [600]
+
+
+async def test_run_restores_saved_cursors_as_progress(tmp_path):
+    harness = Harness(tmp_path)
+    _State({"plug-1": 123}, NOW_MS).save(harness.state_path)
+
+    async def stop(_seconds: float) -> None:
+        raise SystemExit
+
+    harness.context.sleep = stop
+    with pytest.raises(SystemExit):
+        await TuyaSource(params(), FakeClient([PLUG])).run(harness.context)
+    assert ("plug-1", 123) in harness.restored
     assert harness.state_path.exists()
 
 

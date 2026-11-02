@@ -174,6 +174,7 @@ class Runtime:
             emit,
             on_success=succeeded,
             on_problem=problem,
+            on_progress=lambda p: status.record_progress(p.stream, p.complete_until_ms),
             clock=self._clock,
             sleep=self._sleep,
         )

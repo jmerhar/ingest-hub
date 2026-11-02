@@ -273,3 +273,22 @@ def test_source_names_must_be_unique(tmp_path):
     spec = SourceSpec("p", "k", OneBatch(), "d", FakeSink())
     with pytest.raises(ValueError, match="unique"):
         Runtime([spec, spec], data_dir=tmp_path, spool_max_bytes=1 << 20, client=None)  # type: ignore[arg-type]
+
+
+async def test_progress_is_recorded_only_for_safe_batches_and_can_be_restored(tmp_path):
+    sink = FakeSink()
+    done = asyncio.Event()
+
+    class Reporting:
+        async def run(self, context: SourceContext) -> None:
+            context.restore_progress([Progress("old", 5)])
+            await context.emit([point()], [Progress("s1", 100)])
+            sink.outcome = Outcome.REJECT
+            await context.emit([point()], [Progress("s1", 200), Progress("s2", 300)])
+            done.set()
+            await asyncio.Event().wait()
+
+    async with httpx2.AsyncClient() as client:
+        runtime = make_runtime(tmp_path, [SourceSpec("p", "k", Reporting(), "d", sink)], client)
+        await run_until(runtime, done.is_set)
+    assert runtime.snapshot()["sources"][0]["progress"] == {"old": 5, "s1": 100}

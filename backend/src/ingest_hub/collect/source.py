@@ -54,6 +54,7 @@ class SourceContext:
         *,
         on_success: Callable[[], None],
         on_problem: Callable[[str], None],
+        on_progress: Callable[[Progress], None] = lambda _: None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -63,6 +64,7 @@ class SourceContext:
         self._emit = emit
         self._on_success = on_success
         self._on_problem = on_problem
+        self._on_progress = on_progress
         self.clock = clock
         self.sleep = sleep
 
@@ -90,7 +92,17 @@ class SourceContext:
         ]
         if not batch:
             return True
-        return await self._emit(batch)
+        safe = await self._emit(batch)
+        if safe:
+            for p in progress:
+                self._on_progress(p)
+        return safe
+
+    def restore_progress(self, progress: Sequence[Progress]) -> None:
+        """Report progress delivered before a restart, such as cursors loaded from state, so a
+        stream that stops advancing from now on is noticed even before its next batch."""
+        for p in progress:
+            self._on_progress(p)
 
     def succeeded(self) -> None:
         """Report a successful round of work, which also resets the source's back-off."""

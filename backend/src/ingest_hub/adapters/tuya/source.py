@@ -145,6 +145,7 @@ class TuyaSource:
         """Poll for ever, one poll every ``poll_minutes``."""
         path = context.state_dir / STATE_FILE
         state = _State.load(path)
+        context.restore_progress([Progress(d, c) for d, c in state.cursors.items()])
         while True:
             await self.poll(context, state, path)
             context.succeeded()
