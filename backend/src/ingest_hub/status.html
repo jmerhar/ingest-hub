@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ingest-hub</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #677085; --line: #e2e5eb;
+    --ok: #1a7f4b; --warn: #a15c00; --bad: #b42318; --chip: #eef1f5;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1a1f27; --text: #e6e9ef; --muted: #98a1b3; --line: #2a313c;
+      --ok: #4cc38a; --warn: #f0a646; --bad: #f97066; --chip: #232a35;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header, main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px 16px; min-width: 0; }
+  .card h2 { font-size: 16px; margin: 0 0 2px; display: flex; gap: 8px; align-items: center; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .ok { background: var(--ok); } .warn { background: var(--warn); } .bad { background: var(--bad); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 10px 0 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  .error { color: var(--bad); }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin-top: 6px; font-size: 13px; }
+  td { padding: 2px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+  td + td { text-align: right; padding-left: 8px; white-space: nowrap; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 0 8px;
+          font-size: 12px; color: var(--muted); }
+  #problem { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ingest-hub</h1>
+  <span id="meta" class="muted small"></span>
+  <span id="problem" class="error small"></span>
+</header>
+<main><div id="sources" class="grid"></div></main>
+<script>
+"use strict";
+const REFRESH_MS = 15000;
+
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+  for (const child of children) node.append(child instanceof Node ? child : String(child));
+  return node;
+}
+
+function ago(seconds) {
+  if (seconds == null) return "never";
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 90) return s + " s ago";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 172800) return (s / 3600).toFixed(1) + " h ago";
+  return Math.round(s / 86400) + " days ago";
+}
+
+function health(source, now) {
+  if (source.state === "backing-off") return "bad";
+  if (source.batches_rejected > 0 || (source.spool && source.spool.files > 0)) return "warn";
+  const behind = Object.values(source.progress || {}).map(ms => now - ms / 1000);
+  if (behind.some(s => s > 3 * 3600)) return "warn";
+  if (source.last_error_at && (!source.last_success || source.last_error_at > source.last_success))
+    return "warn";
+  return "ok";
+}
+
+function card(source, doc) {
+  const now = doc.now;
+  const dest = doc.destinations[source.destination] || {};
+  const level = health(source, now);
+  const rows = [
+    ["state", source.state + (source.restarts ? " (" + source.restarts + " restarts)" : "")],
+    ["destination", source.destination + (dest.database ? " → " + dest.database : "")],
+    ["last success", ago(source.last_success == null ? null : now - source.last_success)],
+    ["last written", ago(source.last_written == null ? null : now - source.last_written)],
+    ["points", source.points_emitted.toLocaleString()],
+    ["batches", source.batches_written + " written, " + source.write_failures + " failed, "
+                + source.batches_spooled + " spooled, " + source.batches_rejected + " rejected"],
+  ];
+  if (source.spool) {
+    const sp = source.spool;
+    rows.push(["spool", sp.files + " waiting" + (sp.oldest_seconds != null
+      ? ", oldest " + ago(sp.oldest_seconds) : "") + (sp.dropped ? ", " + sp.dropped + " dropped" : "")]);
+  }
+  rows.push(["heartbeat", source.heartbeat_ok == null ? "—" : source.heartbeat_ok ? "ok" : "failing"]);
+  const list = el("dl");
+  for (const [k, v] of rows) list.append(el("dt", {}, k), el("dd", {}, v));
+  if (source.last_error) {
+    list.append(el("dt", {}, "last error"),
+      el("dd", { class: "error" }, source.last_error + " (" + ago(now - source.last_error_at) + ")"));
+  }
+  const node = el("section", { class: "card" },
+    el("h2", {}, el("span", { class: "dot " + level, title: level }), source.name,
+       el("span", { class: "chip" }, source.kind)),
+    list);
+  const streams = Object.entries(source.progress || {});
+  if (streams.length) {
+    streams.sort((a, b) => a[1] - b[1]);
+    const table = el("table");
+    for (const [stream, ms] of streams) {
+      table.append(el("tr", {}, el("td", {}, stream), el("td", {}, ago(now - ms / 1000))));
+    }
+    node.append(el("details", {}, el("summary", {},
+      streams.length + " stream(s), oldest complete " + ago(now - streams[0][1] / 1000)), table));
+  }
+  return node;
+}
+
+async function refresh() {
+  const problem = document.getElementById("problem");
+  try {
+    const response = await fetch("api/status", { cache: "no-store" });
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const doc = await response.json();
+    const meta = "version " + doc.version + (doc.revision ? " (" + doc.revision.slice(0, 7) + ")" : "")
+      + " · up " + ago(doc.now - doc.started_at).replace(" ago", "")
+      + " · alerts " + (doc.alerts ? "on" : "off");
+    document.getElementById("meta").textContent = meta;
+    document.getElementById("sources").replaceChildren(...doc.sources.map(s => card(s, doc)));
+    problem.style.display = "none";
+  } catch (error) {
+    problem.textContent = "cannot load the status: " + error.message;
+    problem.style.display = "inline";
+  }
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>

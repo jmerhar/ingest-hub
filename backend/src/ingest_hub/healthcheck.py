@@ -1,8 +1,9 @@
 """The container's health probe: ``python -m ingest_hub.healthcheck``.
 
-Healthy while the runtime keeps rewriting its status file. One source failing does not make the
-container unhealthy, since restarting it would not help that source; the status file and each
-source's heartbeat say which source is in trouble.
+With the web interface on (``WEB_PORT``), it asks ``/health``; without it, the process is healthy
+while the runtime keeps rewriting its status file. Either way one source failing does not make the
+container unhealthy, since restarting it would not help that source; the status page, alerts and
+each source's heartbeat say which source is in trouble.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ import os
 import sys
 import time
 from pathlib import Path
+
+from jigkit.healthcheck import probe
 
 from ingest_hub.collect.runtime import STATUS_FILE, STATUS_INTERVAL_SECONDS
 
@@ -32,7 +35,10 @@ def check(data_dir: Path, now: float | None = None) -> str | None:
 
 
 def main() -> int:
-    """Probe the data directory named by DATA_DIR."""
+    """Probe ``/health`` when WEB_PORT is set, otherwise the status file in DATA_DIR."""
+    port = os.environ.get("WEB_PORT")
+    if port:
+        return probe(f"http://127.0.0.1:{port}/health", {"status": "ok"})
     reason = check(Path(os.environ.get("DATA_DIR") or "data"))
     if reason:
         print(f"unhealthy: {reason}", file=sys.stderr)

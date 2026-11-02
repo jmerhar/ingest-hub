@@ -26,6 +26,10 @@ services:
       TZ: ${TZ:-UTC}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SPOOL_MAX_BYTES: ${SPOOL_MAX_BYTES:-268435456}
+    ports:
+      # The status page, on loopback for a reverse proxy to publish. It is read-only and shows
+      # no credentials, but it does show what is collected, so keep it off the open internet.
+      - "${INGEST_HUB_BIND:-127.0.0.1}:${INGEST_HUB_PORT:-8000}:8000"
     volumes:
       - ./data:/data
       - ./secrets:/run/secrets:ro

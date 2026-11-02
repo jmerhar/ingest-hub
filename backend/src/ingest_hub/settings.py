@@ -18,6 +18,8 @@ class Settings(AppSettings):
     config_file: Path | None = None
     #: The most each source's spool keeps on disk before dropping its oldest batches.
     spool_max_bytes: int = Field(256 * 1024 * 1024, ge=1024 * 1024)
+    #: The port the status page and ``/health`` are served on; no web interface when unset.
+    web_port: int | None = Field(None, ge=1, le=65535)
 
     @property
     def resolved_config_file(self) -> Path:

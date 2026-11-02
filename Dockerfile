@@ -5,7 +5,9 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     # No .pyc files, so the image runs with a read-only root filesystem.
     PYTHONDONTWRITEBYTECODE=1 \
-    DATA_DIR=/data
+    DATA_DIR=/data \
+    # The status page and /health; the compose file decides whether the host publishes it.
+    WEB_PORT=8000
 
 WORKDIR /app
 COPY backend/pyproject.toml ./
@@ -22,6 +24,7 @@ ENV REVISION=$REVISION
 RUN mkdir -p /data && chown 1000:1000 /data
 USER 1000:1000
 
+EXPOSE 8000
 HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
     CMD ["python", "-m", "ingest_hub.healthcheck"]
 ENTRYPOINT ["ingest-hub"]

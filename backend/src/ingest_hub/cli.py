@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import contextlib
 import logging
+import os
 import signal
 import sys
 from collections.abc import Coroutine, Sequence
@@ -26,18 +27,19 @@ from typing import Any
 import httpx2
 from jigkit.influx import Influx3Sink, QueryError
 from jigkit.logging import configure_logging
-from jigkit.notify import AppriseSender
+from jigkit.web import serve
+from jigkit.web.server import PORT
 from pydantic import ValidationError
 
 from ingest_hub import __version__
 from ingest_hub.adapters import tuya
 from ingest_hub.adapters.tuya.dump import DumpError, import_dump
-from ingest_hub.alerts import AlertMonitor, read_urls
-from ingest_hub.collect import Runtime
+from ingest_hub.alerts import read_urls
 from ingest_hub.compare import compare
 from ingest_hub.config import ConfigError, load_config
-from ingest_hub.hub import make_sink, plan, source_params
+from ingest_hub.hub import assemble, make_sink, plan, source_params
 from ingest_hub.settings import Settings
+from ingest_hub.web import ONLY_ENV
 
 logger = logging.getLogger("ingest_hub")
 
@@ -48,29 +50,24 @@ async def _run(settings: Settings, only: str | None) -> int:
     """Run the runtime until SIGTERM or SIGINT."""
     config = load_config(settings.resolved_config_file)
     async with httpx2.AsyncClient() as client:
-        built = plan(config, client, only)
-        runtime = Runtime(
-            built.specs,
+        assembly = assemble(
+            config,
+            client,
             data_dir=settings.data_dir,
             spool_max_bytes=settings.spool_max_bytes,
-            client=client,
+            only=only,
         )
-        names = ", ".join(spec.name for spec in built.specs)
-        logger.info("ingest-hub %s collecting from %s", __version__, names)
-        work = [runtime.run()]
-        if config.alerts is not None:
-            monitor = AlertMonitor(
-                config.alerts, read_urls(config.alerts.urls_file), AppriseSender(), runtime.snapshot
-            )
-            work.append(monitor.run())
-        await _until_signalled(_together(work))
+        await _until_signalled(assembly.run())
     logger.info("stopped")
     return 0
 
 
-async def _together(work: list[Coroutine[Any, Any, None]]) -> None:
-    """Run coroutines side by side; cancelling this cancels them all."""
-    await asyncio.gather(*work)
+def _serve(settings: Settings, only: str | None) -> int:
+    """Run the sources inside the web application, served until SIGTERM or SIGINT."""
+    load_config(settings.resolved_config_file)  # fail with a clear message before serving
+    os.environ[ONLY_ENV] = only or ""
+    serve("ingest_hub.web:create_app", settings, port=settings.web_port or PORT)
+    return 0
 
 
 async def _until_signalled(work: Coroutine[Any, Any, None]) -> None:
@@ -174,6 +171,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_file = settings.data_dir / LOG_FILE if args.command == "run" else None
     configure_logging(settings.log_level, log_file=log_file)
     try:
+        if args.command == "run" and settings.web_port:
+            return _serve(settings, args.only)
         if args.command == "run":
             return asyncio.run(_run(settings, args.only))
         if args.command == "check":

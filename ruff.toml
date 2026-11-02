@@ -9,7 +9,7 @@ select = ["E", "F", "W", "I", "B", "C4", "UP", "ARG", "SIM"]
 
 [lint.per-file-ignores]
 # A pytest fixture is very often requested for what it does rather than for its value.
-"**/tests/**" = ["ARG001", "ARG002"]
+"**/tests/**" = ["ARG001", "ARG002", "ARG005"]
 
 [lint.isort]
 known-first-party = ["ingest_hub"]

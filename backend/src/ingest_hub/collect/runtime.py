@@ -96,6 +96,8 @@ class Runtime:
             for spec in specs
         ]
         self.started_at = clock()
+        #: When the status loop last ran; a loop that has stopped means a stuck process.
+        self.refreshed_at = self.started_at
 
     @property
     def statuses(self) -> list[SourceStatus]:
@@ -107,6 +109,7 @@ class Runtime:
         return {
             "updated_at": self._clock(),
             "started_at": self.started_at,
+            "refreshed_at": self.refreshed_at,
             "sources": [slot.status.snapshot(slot.spool) for slot in self._slots],
         }
 
@@ -214,6 +217,7 @@ class Runtime:
     async def _write_status_forever(self) -> None:
         """Rewrite the status file at a fixed interval; the health probe checks its age."""
         while True:
+            self.refreshed_at = self._clock()
             try:
                 self.write_status()
             except OSError:

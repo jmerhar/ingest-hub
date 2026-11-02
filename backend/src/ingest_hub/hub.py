@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx2
 from jigkit.influx import Influx2Sink, Influx3Sink
+from jigkit.notify import AppriseSender
 from jigkit.sinks import Sink
 from pydantic import BaseModel, ValidationError
 
+from ingest_hub import __version__
 from ingest_hub.adapters import ADAPTERS
-from ingest_hub.collect import SourceSpec
+from ingest_hub.alerts import AlertMonitor, Sender, read_urls
+from ingest_hub.collect import Runtime, SourceSpec
 from ingest_hub.config import ConfigError, DestinationConfig, HubConfig, describe, read_secret
 
 
@@ -75,3 +81,49 @@ def plan(config: HubConfig, client: httpx2.AsyncClient, only: str | None = None)
             )
         )
     return Plan(specs, sinks)
+
+
+logger = logging.getLogger("ingest_hub")
+
+
+@dataclass
+class Assembly:
+    """Everything a run consists of: the configuration, the runtime and the alert monitor."""
+
+    config: HubConfig
+    runtime: Runtime
+    monitor: AlertMonitor | None
+
+    async def run(self) -> None:
+        """Run the runtime and the alert monitor side by side until cancelled."""
+        work = [self.runtime.run()]
+        if self.monitor is not None:
+            work.append(self.monitor.run())
+        await asyncio.gather(*work)
+
+
+def assemble(
+    config: HubConfig,
+    client: httpx2.AsyncClient,
+    *,
+    data_dir: Path,
+    spool_max_bytes: int,
+    only: str | None = None,
+    sender: Sender | None = None,
+) -> Assembly:
+    """Build the runtime for the configured sources, and the alert monitor when configured."""
+    built = plan(config, client, only)
+    runtime = Runtime(
+        built.specs, data_dir=data_dir, spool_max_bytes=spool_max_bytes, client=client
+    )
+    monitor = None
+    if config.alerts is not None:
+        monitor = AlertMonitor(
+            config.alerts,
+            read_urls(config.alerts.urls_file),
+            sender or AppriseSender(),
+            runtime.snapshot,
+        )
+    names = ", ".join(spec.name for spec in built.specs)
+    logger.info("ingest-hub %s collecting from %s", __version__, names)
+    return Assembly(config, runtime, monitor)
