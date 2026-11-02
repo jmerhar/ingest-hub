@@ -9,7 +9,7 @@ from typing import Any
 import httpx2
 from pydantic import BaseModel
 
-from ingest_hub.adapters import tuya
+from ingest_hub.adapters import mqtt, tuya
 from ingest_hub.collect import Source
 
 
@@ -18,9 +18,11 @@ class Adapter:
     """How to validate a kind of source's parameters and build one."""
 
     params: type[BaseModel]
-    build: Callable[[Any, httpx2.AsyncClient], Source]
+    #: Builds the source from its validated parameters, the shared HTTP client and its name.
+    build: Callable[[Any, httpx2.AsyncClient, str], Source]
 
 
 ADAPTERS: dict[str, Adapter] = {
+    "mqtt": Adapter(mqtt.MqttParams, mqtt.build),
     "tuya": Adapter(tuya.TuyaParams, tuya.build),
 }

@@ -68,7 +68,7 @@ def plan(config: HubConfig, client: httpx2.AsyncClient, only: str | None = None)
             SourceSpec(
                 name=name,
                 kind=source.kind,
-                source=ADAPTERS[source.kind].build(params, client),
+                source=ADAPTERS[source.kind].build(params, client, name),
                 destination=source.destination,
                 sink=sinks[source.destination],
                 heartbeat_url=heartbeat,

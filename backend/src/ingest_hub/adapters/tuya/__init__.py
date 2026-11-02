@@ -19,7 +19,7 @@ def make_client(params: TuyaParams, client: httpx2.AsyncClient) -> TuyaClient:
     )
 
 
-def build(params: TuyaParams, client: httpx2.AsyncClient) -> TuyaSource:
+def build(params: TuyaParams, client: httpx2.AsyncClient, _name: str = "") -> TuyaSource:
     """A Tuya source from its validated parameters."""
     return TuyaSource(params, make_client(params, client))
 
