@@ -9,7 +9,7 @@ description = "Config-driven ingest service: pluggable source adapters writing t
 requires-python = ">=3.14"
 license = "GPL-3.0-or-later"
 dependencies = [
-    "jigkit[influx,heartbeat,notify,web]==0.6.0",
+    "jigkit[influx,heartbeat,notify,web]==0.8.2",
     "httpx2>=2.16",
     # The MQTT source.
     "aiomqtt>=2.5,<3",
@@ -21,7 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "jigkit[testing]==0.6.0",
+    "jigkit[testing]==0.8.2",
     "pytest>=9.1",
     "pytest-asyncio>=1.4",
     "pytest-cov>=7.1",
