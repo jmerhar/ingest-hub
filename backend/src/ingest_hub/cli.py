@@ -4,6 +4,8 @@
     ingest-hub check [--only SOURCE]         validate the configuration and test each destination
     ingest-hub import-tuya-dump DIR --source SOURCE
                                              write a saved Tuya report-log dump
+    ingest-hub compare --destination NAME OLD NEW [--hours H] [--tolerance T]
+                                             compare a shadow table with the one it replaces
 
 Settings come from the environment (DATA_DIR, CONFIG_FILE, LOG_LEVEL, SPOOL_MAX_BYTES); sources
 and destinations from the configuration file.
@@ -22,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx2
+from jigkit.influx import Influx3Sink, QueryError
 from jigkit.logging import configure_logging
 from pydantic import ValidationError
 
@@ -29,6 +32,7 @@ from ingest_hub import __version__
 from ingest_hub.adapters import tuya
 from ingest_hub.adapters.tuya.dump import DumpError, import_dump
 from ingest_hub.collect import Runtime
+from ingest_hub.compare import compare
 from ingest_hub.config import ConfigError, load_config
 from ingest_hub.hub import make_sink, plan, source_params
 from ingest_hub.settings import Settings
@@ -105,6 +109,27 @@ async def _import_tuya_dump(settings: Settings, directory: Path, source: str) ->
     return 0
 
 
+async def _compare(
+    settings: Settings, destination: str, old: str, new: str, hours: float, tolerance: float
+) -> int:
+    """Compare table ``new`` with ``old`` in an InfluxDB 3 destination; 0 when they match."""
+    config = load_config(settings.resolved_config_file)
+    if destination not in config.destinations:
+        raise ConfigError(f"no destination named {destination!r}")
+    sink = make_sink(config.destinations[destination])
+    if not isinstance(sink, Influx3Sink):
+        await sink.aclose()
+        raise ConfigError(f"destination {destination!r} is not InfluxDB 3")
+    try:
+        result = await compare(sink, old, new, hours=hours)
+    except QueryError as error:
+        raise ConfigError(f"cannot query {destination!r}: {error}") from None
+    finally:
+        await sink.aclose()
+    print(result.report(tolerance))
+    return 0 if result.ok(tolerance) else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse the command line and run the command; configuration errors exit 2."""
     parser = argparse.ArgumentParser(prog="ingest-hub", description=__doc__.split("\n", 1)[0])
@@ -116,6 +141,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     dump = commands.add_parser("import-tuya-dump")
     dump.add_argument("directory", type=Path)
     dump.add_argument("--source", required=True, help="the Tuya source whose settings to use")
+    comparing = commands.add_parser("compare")
+    comparing.add_argument("--destination", required=True)
+    comparing.add_argument("old", help="the table the old writer fills")
+    comparing.add_argument("new", help="the shadow table the new source fills")
+    comparing.add_argument("--hours", type=float, default=24.0, help="look back at most this far")
+    comparing.add_argument(
+        "--tolerance", type=float, default=0.01, help="largest relative difference of a mean"
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -130,6 +163,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return asyncio.run(_run(settings, args.only))
         if args.command == "check":
             return asyncio.run(_check(settings, args.only))
+        if args.command == "compare":
+            return asyncio.run(
+                _compare(settings, args.destination, args.old, args.new, args.hours, args.tolerance)
+            )
         return asyncio.run(_import_tuya_dump(settings, args.directory, args.source))
     except (ConfigError, DumpError) as error:
         print(f"ingest-hub: {error}", file=sys.stderr)
