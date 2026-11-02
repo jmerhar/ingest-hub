@@ -1,0 +1,12 @@
+# Coverage configuration for the shared tooling in jmerhar/coverage, which renders the CI summary
+# table, enforces the gate, and publishes the HTML report.
+#
+# The gate sits just under the suite's measured line coverage. Raise it as coverage climbs; never
+# lower it to make a red build pass.
+
+[suites.backend]
+label = "Backend (Python)"
+format = "coveragepy"
+report = "backend/coverage.json"
+html = "backend/htmlcov"
+gate = 99.0

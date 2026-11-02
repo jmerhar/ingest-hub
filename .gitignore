@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Runtime state: config, spools, cursors, logs. The real source definitions are private.
+data/
+
+# Local overrides of the compose defaults
+.env
+
+# Coverage and test output
+.coverage
+coverage.json
+coverage.xml
+htmlcov/
+junit/
+.pytest_cache/
+.ruff_cache/
+# Staging directory the coverage publish step assembles (CI only)
+coverage-upload/
+# Shared coverage tooling, fetched on demand by `make coverage`
+.coverage-report.py
+
+# Editor and OS junk
+.idea/
+*.iml
+*.swp
+.DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
