@@ -13,6 +13,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Each source's status records its streams' progress, restored from saved state at startup.
 - A read-only status page, `/api/status` and `/health`, served by `ingest-hub run` when
   `WEB_PORT` is set (as it is in the image); the health probe then asks `/health`.
+- Streams can carry a label, shown on the status page beside the stream's identifier; Tuya
+  devices are labelled with their names. The page has an icon.
 
 ## 0.1.0 — 2026-11-02
 

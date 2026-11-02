@@ -232,7 +232,7 @@ class TuyaSource:
         complete = start_poll - int(params.lag_minutes * MINUTE_MS)
         if cursor is not None:
             complete = max(complete, cursor)
-        if await context.emit(built.points, [Progress(device.id, complete)]):
+        if await context.emit(built.points, [Progress(device.id, complete, device.name or None)]):
             state.cursors[device.id] = complete
             state.save(path)
         else:

@@ -8,7 +8,8 @@ The application's lifespan runs the sources and alerts, so one process both coll
   and would only interrupt spooling.
 - ``GET /api/status``: every source's status, the destinations by kind and database, and the
   version. No URL, token or other credential appears in it.
-- ``GET /``: the status page, which renders ``/api/status`` and refreshes itself.
+- ``GET /``: the status page, which renders ``/api/status`` and refreshes itself, and its icon at
+  ``/favicon.svg``.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Any
 
 import httpx2
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from jigkit.web import install_security_headers
 
 from ingest_hub import __version__
@@ -121,6 +122,19 @@ def build_app(
         if "assembly" not in state:
             return JSONResponse({"status": "starting"}, 503)
         return JSONResponse(status_document(state["assembly"], settings.revision))
+
+    @app.get("/favicon.svg")
+    async def favicon() -> Response:
+        """The page's icon: streams flowing into a database."""
+        svg = resources.files("ingest_hub").joinpath("favicon.svg").read_bytes()
+        return Response(
+            svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"}
+        )
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon_ico() -> RedirectResponse:
+        """Browsers ask for this path unprompted; the icon is an SVG."""
+        return RedirectResponse("/favicon.svg", status_code=301)
 
     @app.get("/", response_class=HTMLResponse)
     async def page() -> HTMLResponse:

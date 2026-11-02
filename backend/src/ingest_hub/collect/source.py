@@ -27,6 +27,8 @@ class Progress:
 
     stream: str
     complete_until_ms: int
+    #: A human-readable name for the stream, for status pages; never written to the table.
+    label: str | None = None
 
 
 class Source(Protocol):

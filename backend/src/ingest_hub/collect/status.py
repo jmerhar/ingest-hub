@@ -36,6 +36,8 @@ class SourceStatus:
     heartbeat_ok: bool | None = None
     #: Each stream's latest delivered ``complete_until``, in Unix milliseconds.
     progress: dict[str, int] = field(default_factory=dict)
+    #: Human-readable names of streams whose source gave one.
+    labels: dict[str, str] = field(default_factory=dict)
 
     def record_write(self, ok: bool) -> None:
         """Count a write attempt."""
@@ -62,9 +64,13 @@ class SourceStatus:
         self.last_error = message
         self.last_error_at = self.clock()
 
-    def record_progress(self, stream: str, complete_until_ms: int) -> None:
+    def record_progress(
+        self, stream: str, complete_until_ms: int, label: str | None = None
+    ) -> None:
         """Note how far a stream is complete, once the batch carrying it is safe."""
         self.progress[stream] = max(complete_until_ms, self.progress.get(stream, 0))
+        if label:
+            self.labels[stream] = label
 
     def record_heartbeat(self, ok: bool) -> None:
         """Note whether a heartbeat call got through."""
@@ -93,6 +99,7 @@ class SourceStatus:
             )
         }
         data["progress"] = dict(self.progress)
+        data["labels"] = dict(self.labels)
         if spool is not None:
             stats = spool.stats()
             data["spool"] = {

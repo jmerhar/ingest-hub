@@ -18,3 +18,13 @@ def test_snapshot_without_a_spool_and_the_counters():
     assert data["batches_spooled"] == 1 and data["batches_rejected"] == 1
     assert data["last_written"] == 42.0
     assert data["last_error"] == "boom" and data["last_error_at"] == 42.0
+
+
+def test_progress_keeps_the_furthest_point_and_the_latest_label():
+    status = SourceStatus("p", "tuya", "home")
+    status.record_progress("dev", 200, "Kitchen")
+    status.record_progress("dev", 100)
+    status.record_progress("dev", 150, "Kitchen plug")
+    data = status.snapshot()
+    assert data["progress"] == {"dev": 200}
+    assert data["labels"] == {"dev": "Kitchen plug"}

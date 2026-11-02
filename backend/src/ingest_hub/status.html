@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ingest-hub</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <style>
   :root {
     --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #677085; --line: #e2e5eb;
@@ -39,6 +40,7 @@
   table { border-collapse: collapse; width: 100%; margin-top: 6px; font-size: 13px; }
   td { padding: 2px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
   td + td { text-align: right; padding-left: 8px; white-space: nowrap; }
+  .id { font-size: 11px; }
   .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 0 8px;
           font-size: 12px; color: var(--muted); }
   #problem { display: none; }
@@ -81,13 +83,19 @@ function health(source, now) {
   return "ok";
 }
 
+function destination(name, dest) {
+  // The database is named only when it differs from the destination's own name.
+  const where = dest.database && dest.database !== name ? name + " → " + dest.database : name;
+  return dest.kind ? where + " (" + dest.kind + ")" : where;
+}
+
 function card(source, doc) {
   const now = doc.now;
   const dest = doc.destinations[source.destination] || {};
   const level = health(source, now);
   const rows = [
     ["state", source.state + (source.restarts ? " (" + source.restarts + " restarts)" : "")],
-    ["destination", source.destination + (dest.database ? " → " + dest.database : "")],
+    ["destination", destination(source.destination, dest)],
     ["last success", ago(source.last_success == null ? null : now - source.last_success)],
     ["last written", ago(source.last_written == null ? null : now - source.last_written)],
     ["points", source.points_emitted.toLocaleString()],
@@ -114,8 +122,13 @@ function card(source, doc) {
   if (streams.length) {
     streams.sort((a, b) => a[1] - b[1]);
     const table = el("table");
+    const labels = source.labels || {};
     for (const [stream, ms] of streams) {
-      table.append(el("tr", {}, el("td", {}, stream), el("td", {}, ago(now - ms / 1000))));
+      // Labels need not be unique, so the stream's own identifier stays visible beside one.
+      const name = labels[stream]
+        ? el("td", {}, labels[stream], " ", el("span", { class: "muted id" }, stream))
+        : el("td", {}, stream);
+      table.append(el("tr", {}, name, el("td", {}, ago(now - ms / 1000))));
     }
     node.append(el("details", {}, el("summary", {},
       streams.length + " stream(s), oldest complete " + ago(now - streams[0][1] / 1000)), table));

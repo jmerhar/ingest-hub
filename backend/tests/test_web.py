@@ -67,6 +67,8 @@ async def test_status_health_and_page_while_collecting(environment, secrets):
                 assert doc["destinations"] == {"home": {"kind": "influx3", "database": "example"}}
                 (source,) = doc["sources"]
                 assert source["name"] == "plugs" and source["progress"].keys() == {"dev-a"}
+                # The device's name labels its stream on the page.
+                assert source["labels"] == {"dev-a": "Plug A"}
                 raw = (await client.get("/api/status")).text
                 for secret in ("synthetic-token", "synthetic-secret", "synthetic-id", db.url):
                     assert secret not in raw
@@ -76,6 +78,14 @@ async def test_status_health_and_page_while_collecting(environment, secrets):
                 assert "connect-src 'self'" in page.headers["content-security-policy"]
                 assert page.headers["x-content-type-options"] == "nosniff"
                 assert page.headers["cache-control"] == "no-cache"
+                assert '<link rel="icon" href="favicon.svg"' in page.text
+
+                icon = await client.get("/favicon.svg")
+                assert icon.status_code == 200 and icon.text.startswith("<svg")
+                assert icon.headers["content-type"] == "image/svg+xml"
+                redirect = await client.get("/favicon.ico")
+                assert redirect.status_code == 301
+                assert redirect.headers["location"] == "/favicon.svg"
 
                 clock.offset = web.STALE_SECONDS + 60
                 stale = await client.get("/health")
