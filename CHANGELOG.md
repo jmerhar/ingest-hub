@@ -3,6 +3,15 @@
 Notable changes to ingest-hub. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Alerts through Apprise when a source keeps failing, its destination refuses batches or backs
+  up, or one of its streams falls behind; repeated while the problem lasts, with a message when it
+  clears.
+- Each source's status records its streams' progress, restored from saved state at startup.
+
 ## 0.1.0 — 2026-11-02
 
 ### Added

@@ -43,6 +43,22 @@ database (`influx3` or `influx2`); a `[sources.NAME]` table is one source, its a
 its destination and its adapter's `params`. Credentials are always files, named by `*_file`
 paths; a literal credential in the file is refused.
 
+### Alerts
+
+An optional `[alerts]` section sends notifications through
+[Apprise](https://github.com/caronc/apprise) to the URLs in `urls_file` (one per line, so any of
+Apprise's services: Telegram, email, Signal, ntfy, an Apprise API server, …). Each source is
+checked once a minute:
+
+| Alert | When |
+|---|---|
+| failing | its latest news is an error, and it has not completed a round of work for `failing_minutes` (30) |
+| backlog | its spool's oldest batch has waited for `backlog_minutes` (15): the destination is unreachable or refusing writes |
+| stalled | one of its streams' `complete_until` is more than `progress_hours` (3) behind |
+| rejected | its destination refused batches for good since the last check |
+
+An ongoing problem is repeated every `repeat_hours` (6), and a message follows when it clears.
+
 ## What gets written
 
 Every point carries the time its source measured it, never the time it was written, so a backlog

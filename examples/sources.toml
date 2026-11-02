@@ -3,6 +3,14 @@
 #
 # Credentials are never written here: each is the path of a file holding it.
 
+# Optional: notifications through Apprise when a source fails, falls behind or backs up.
+[alerts]
+urls_file = "/run/secrets/alert_urls"   # Apprise URLs, one per line
+# failing_minutes = 30
+# backlog_minutes = 15
+# progress_hours = 3
+# repeat_hours = 6
+
 # Where points go. Each destination is one database.
 [destinations.home]
 kind = "influx3"                    # or "influx2" (then also set org)
