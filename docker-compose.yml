@@ -1,0 +1,31 @@
+# ingest-hub, as one service.
+#
+# Self-contained: this file is all anyone needs to run it, so it pulls the published image rather
+# than naming a build context. Building from source is docker-compose.build.yml, which `make up`
+# adds.
+#
+# Everything mutable lives in ./data: the configuration (config/sources.toml), each source's
+# spool and cursors, the status file and the log. Credentials are files under ./secrets, named
+# by path in the configuration.
+services:
+  ingest-hub:
+    # The release line: every release that keeps this configuration and the stored state working.
+    image: ghcr.io/jmerhar/ingest-hub:0.1
+    container_name: ingest-hub
+    restart: unless-stopped
+    # Runs as an ordinary user so the files under ./data belong to a real account on the host.
+    user: "${INGEST_HUB_UID:-1000}:${INGEST_HUB_GID:-1000}"
+    mem_limit: 256m
+    # Nothing in the image is written at run time: the application writes only to /data and
+    # /tmp, and Python writes no bytecode. It needs no Linux capabilities.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      TZ: ${TZ:-UTC}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SPOOL_MAX_BYTES: ${SPOOL_MAX_BYTES:-268435456}
+    volumes:
+      - ./data:/data
+      - ./secrets:/run/secrets:ro

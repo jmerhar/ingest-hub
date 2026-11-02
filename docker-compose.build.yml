@@ -1,0 +1,8 @@
+# Builds the image from this working copy instead of pulling the published one.
+#
+# Kept out of docker-compose.yml so that file stands alone: running ingest-hub needs nothing but
+# the compose file, and `docker compose up` would fail on a build context that is not there.
+services:
+  ingest-hub:
+    build:
+      context: .

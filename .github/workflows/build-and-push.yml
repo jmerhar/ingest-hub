@@ -1,0 +1,183 @@
+name: Test and Publish
+
+on:
+  # push is limited to main because pull_request already covers branch work; triggering on both
+  # would run the whole suite twice for every pull request.
+  # A release tag (v1.2.3) publishes that version's image and its GitHub release.
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Read-only unless a job asks for more, so a compromised step in a test or lint job cannot push to
+# the repository or the registry.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Install
+        run: pip install -e "backend[test]"
+
+      - name: Run tests with coverage
+        env:
+          # The runner's own Python, rather than the virtualenv a local run uses.
+          PYTHON: python
+        # Through the same script as `make test`, so CI and a local run cannot drift.
+        run: >-
+          bin/test-backend.sh -v --junitxml=junit/backend.xml
+          --cov=ingest_hub --cov-report=term-missing
+          --cov-report=xml --cov-report=json --cov-report=html
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-backend
+          path: |
+            backend/coverage.xml
+            backend/coverage.json
+            backend/htmlcov
+            backend/junit
+          if-no-files-found: error
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Shell scripts
+        run: shellcheck bin/*.sh
+
+      # The manifest names one version; a release tag must name it, with its changelog notes.
+      - name: Versions agree
+        run: python3 bin/version.py check ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff
+        run: bin/ci-ruff.sh
+
+      # The runner has Docker, so `config` resolves and validates each combination that is run.
+      - name: Compose files parse
+        run: bin/check-compose.sh
+
+  coverage:
+    needs: [test]
+    runs-on: ubuntu-latest
+    # contents: read for checkout; statuses: write to link the coverage report from the commit.
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      # Restored to the paths coverage.toml declares.
+      - name: Download coverage
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-backend
+          path: backend
+
+      - uses: jmerhar/coverage/.github/actions/summary@v1
+
+      # Informational (see codecov.yml), and before the gate so the data lands even when the gate
+      # fails.
+      - uses: jmerhar/coverage/.github/actions/codecov@v1
+        if: ${{ !cancelled() }}
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          junit: backend/junit/*.xml
+
+      # Fails the build if the suite drops below its bound in coverage.toml. image needs this
+      # job, so a regression blocks the image.
+      - uses: jmerhar/coverage/.github/actions/gate@v1
+
+      # Only on green pushes to main; the action skips when the token is absent.
+      - uses: jmerhar/coverage/.github/actions/publish@v1
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          token: ${{ secrets.COVERAGE_PAGES_TOKEN }}
+          description: Backend HTML coverage report
+
+  image:
+    # Only after everything is green: the image a deployment pulls is never built from code whose
+    # tests did not pass. A pull request builds it without pushing.
+    needs: [coverage, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          # edge for deployments that follow the branch, an immutable tag so a specific build can
+          # always be pinned or rolled back to, and on a release tag its version, minor and major
+          # line (the action makes no bare major tag for a 0.x release, which bin/version.py's
+          # compose pin allows for).
+          tags: |
+            type=edge
+            type=sha,format=long
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
+
+  release:
+    # The GitHub release for a version, once its image is published.
+    needs: [image]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the GitHub release from the changelog
+        run: bin/github-release.sh "${{ github.ref_name }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
