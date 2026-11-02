@@ -9,7 +9,7 @@ from typing import Any
 import httpx2
 from pydantic import BaseModel
 
-from ingest_hub.adapters import mqtt, tuya
+from ingest_hub.adapters import frank, mqtt, tuya
 from ingest_hub.collect import Source
 
 
@@ -23,6 +23,7 @@ class Adapter:
 
 
 ADAPTERS: dict[str, Adapter] = {
+    "frank": Adapter(frank.FrankParams, frank.build),
     "mqtt": Adapter(mqtt.MqttParams, mqtt.build),
     "tuya": Adapter(tuya.TuyaParams, tuya.build),
 }
