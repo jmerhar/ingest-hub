@@ -7,6 +7,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- An MQTT source: JSON messages on subscribed topics, routed to tables by topic filter, with
+  tags from topic segments, numbers written as floats by default, and a persistent session.
+- `ingest-hub compare`, which checks a shadow table against the table it is meant to reproduce.
 - The adapter runtime: one task per source with its own back-off, one spool and delivery per
   source, a heartbeat per source, and the `ingest_progress` table recording how far each stream
   is complete.

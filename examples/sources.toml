@@ -33,3 +33,30 @@ access_secret_file = "/run/secrets/tuya_access_secret"
 # rescan_every_hours = 24
 # retention_days = 7                # how far back a new device is fetched
 # discover_hours = 6                # how often the device list is refreshed
+
+# An MQTT broker: JSON messages routed to tables by topic filter.
+[sources.meter]
+kind = "mqtt"
+destination = "home"
+
+[sources.meter.params]
+host = "mosquitto"
+# port = 1883
+username = "ingest-hub"
+password_file = "/run/secrets/mqtt_password"
+# client_id = "ingest-hub-meter"   # names the persistent session
+# qos = 1
+# precision = "s"                  # s, ms, us or ns
+
+[[sources.meter.params.routes]]
+topic = "<meter name>/status/em:0"
+table = "meter_power"
+tags = { device = "{0}" }          # {0}: the topic's first segment
+# numbers = "float"                # or "keep" to write integers as integers
+# fields = ["total_act_power"]     # only these keys; every numeric key when unset
+# timestamp_field = "ts"           # a key holding Unix seconds; receive time when unset
+
+[[sources.meter.params.routes]]
+topic = "<meter name>/status/emdata:0"
+table = "meter_energy"
+tags = { device = "{0}" }

@@ -24,6 +24,7 @@ is in `./data`, and `./secrets` is mounted read-only at `/run/secrets`.
 | `ingest-hub run --only NAME` | Collect from one source, even a disabled one. The same image can run a source as its own compose service this way. |
 | `ingest-hub check [--only NAME]` | Validate the configuration, read every secret, and ask each destination whether it would accept a write. |
 | `ingest-hub import-tuya-dump DIR --source NAME` | Write a saved Tuya report-log dump using that source's settings. |
+| `ingest-hub compare --destination NAME OLD NEW` | Compare a shadow table with the table it is meant to reproduce: the schemas, and per minute the row counts and the mean of every numeric column (`--hours`, `--tolerance`). Exits 0 when they match. |
 
 ### Environment
 
@@ -85,6 +86,28 @@ The source polls every `poll_minutes`, fetching each device from its cursor minu
 `overlap_minutes` (once a day, minus `rescan_hours`) up to now, and advances the device's
 `complete_until` to `lag_minutes` before the poll's start. Tuya keeps about a week of logs, so a
 source stopped for longer than that loses the gap.
+
+### MQTT
+
+Each route maps an MQTT topic filter to a table. A message whose topic matches becomes one point:
+
+- its fields are the payload's numeric top-level values (a JSON object is expected; text,
+  booleans, nulls and nested values are left out), written as floats unless the route sets
+  `numbers = "keep"`, or only the keys a route lists in `fields`;
+- its tags are the route's, where `{N}` stands for the topic's N-th segment (from 0);
+- its time is when the hub received it, at the source's `precision`, unless the route names a
+  `timestamp_field` holding Unix seconds.
+
+The session is persistent, under the source's name unless `client_id` is set, so the broker keeps
+QoS 1 and 2 messages for the hub while it reconnects. A dropped connection restarts the source
+after its back-off. MQTT sources write no `ingest_progress`: a pushed stream has no position to
+report.
+
+## Replacing another writer
+
+Point a new source at a shadow table next to the one the old writer fills, run both, then
+`ingest-hub compare` the two. Once the schemas are identical and the minutes agree, rename the
+route's table to the real one and stop the old writer.
 
 ## Development
 
