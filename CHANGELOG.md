@@ -11,6 +11,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   up, or one of its streams falls behind; repeated while the problem lasts, with a message when it
   clears.
 - Each source's status records its streams' progress, restored from saved state at startup.
+- A read-only status page, `/api/status` and `/health`, served by `ingest-hub run` when
+  `WEB_PORT` is set (as it is in the image); the health probe then asks `/health`.
 
 ## 0.1.0 — 2026-11-02
 

@@ -33,6 +33,7 @@ is in `./data`, and `./secrets` is mounted read-only at `/run/secrets`.
 | `DATA_DIR` | `/data` in the image | Configuration, spools, cursors, status file, log. |
 | `CONFIG_FILE` | `$DATA_DIR/config/sources.toml` | The configuration file. |
 | `SPOOL_MAX_BYTES` | 256 MiB | Each source's spool limit; beyond it the oldest batches are dropped. |
+| `WEB_PORT` | `8000` in the image | The status page and `/health`; unset, `run` serves nothing and the health probe reads the status file. |
 | `LOG_LEVEL` | `INFO` | |
 | `TZ` | `UTC` | |
 
@@ -42,6 +43,20 @@ See [`examples/sources.toml`](examples/sources.toml). A `[destinations.NAME]` ta
 database (`influx3` or `influx2`); a `[sources.NAME]` table is one source, its adapter (`kind`),
 its destination and its adapter's `params`. Credentials are always files, named by `*_file`
 paths; a literal credential in the file is refused.
+
+### Status page
+
+With `WEB_PORT` set, `ingest-hub run` also serves:
+
+- `/`: a read-only page showing each source's state, last success and error, points and batches
+  written, spool backlog, heartbeat, and how far each of its streams is complete, refreshed every
+  15 s;
+- `/api/status`: the same as JSON;
+- `/health`: 200 while the runtime is running and refreshing its status, 503 otherwise. It does
+  not depend on any destination, since restarting the process would not bring a database back.
+
+Nothing on it can change anything, and it shows no credentials, but it does show what is being
+collected; publish it only behind a reverse proxy you control.
 
 ### Alerts
 
