@@ -3,6 +3,13 @@
 Notable changes to ingest-hub. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- A Vaillant source, through the myVAILLANT cloud: hourly energy per device, operation mode and
+  energy type, with progress per device, and the system's live state and current power.
+
 ## 0.2.0 — 2026-11-04
 
 ### Added

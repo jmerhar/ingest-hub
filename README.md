@@ -154,6 +154,27 @@ hourly before. One point per period in `table` (`electricity_price`), at the per
 Tomorrow's prices appear in the afternoon; until then that day is skipped and logged, not an
 error.
 
+### Vaillant
+
+`kind = "vaillant"` reads a myVAILLANT account through
+[myPyllant](https://github.com/signalkraft/myPyllant), with the app's login in `username_file` and
+`password_file`, and the `brand` and `country` it was registered under.
+
+- **Energy**, every `energy_minutes` (60): each device's hourly buckets for every operation mode
+  and energy type it reports, in `vaillant_energy`: tags `device` (Vaillant's device type,
+  lower-cased, such as `heatpump`), `operation_mode` (`heating`, `domestic_hot_water`) and
+  `energy_type` (`consumed_electrical_energy`, `heat_generated`, `earned_environment_energy`), a
+  float field `wh` as Vaillant reports it, and `product`, at the start of the hour in UTC. Each
+  poll re-reads `rescan_hours` (48) before the device's cursor, since buckets arrive late and are
+  revised, and the device's `complete_until` trails the poll by `lag_hours` (3). The consumption
+  figures are Vaillant's own estimate, not a meter's.
+- **Live state**, every `state_minutes` (5): `vaillant_power` (current power per device) and
+  `vaillant_system`, `vaillant_circuit`, `vaillant_zone` and `vaillant_dhw` with their
+  temperatures, pressures, setpoints and states, stamped when read.
+
+Vaillant limits how often its API may be called; a 429 or 5xx answer is waited out for
+`pause_minutes` (15) before the next attempt.
+
 ## Replacing another writer
 
 Point a new source at a shadow table next to the one the old writer fills, run both, then
