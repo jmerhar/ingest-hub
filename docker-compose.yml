@@ -10,7 +10,7 @@
 services:
   ingest-hub:
     # The release line: every release that keeps this configuration and the stored state working.
-    image: ghcr.io/jmerhar/ingest-hub:0.1
+    image: ghcr.io/jmerhar/ingest-hub:0.2
     container_name: ingest-hub
     restart: unless-stopped
     # Runs as an ordinary user so the files under ./data belong to a real account on the host.
