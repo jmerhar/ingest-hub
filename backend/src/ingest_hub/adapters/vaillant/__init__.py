@@ -12,16 +12,20 @@ Two kinds of data, on two schedules:
   temperatures, pressures, setpoints and states of the system, its circuits, zones and hot-water
   cylinders (``<prefix>system``, ``…circuit``, ``…zone``, ``…dhw``), stamped when read.
 
-Vaillant enforces request quotas and has frequent incidents, so a refused or failed call (HTTP 429
-or 5xx) is waited out for ``pause_minutes`` before the next attempt, rather than retried at once.
+Vaillant enforces request quotas and has frequent incidents. A refused call (HTTP 429, or 403 naming
+the quota) or a server error, at login or later, is waited out for as long as Vaillant says or at
+most ``pause_minutes``, rather than retried at once; bucket series are requested one at a time,
+a moment apart.
 """
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
@@ -40,8 +44,17 @@ HOUR = dt.timedelta(hours=1)
 STATE_FILE = "vaillant.json"
 #: A session this close to expiry is refreshed before the next call.
 REFRESH_MARGIN = dt.timedelta(minutes=2)
-#: HTTP statuses that mean "not now" rather than "never".
+#: HTTP statuses that mean "not now" rather than "never"; a 403 does too when it names the quota.
 TRANSIENT = frozenset({429, 500, 502, 503, 504})
+#: How Vaillant says when a spent quota comes back: "replenished in 00:00:49".
+REPLENISHED = re.compile(r"replenished in (\d+):(\d{2}):(\d{2})")
+#: Seconds added to the replenishment time Vaillant names, so the next call is not early.
+QUOTA_MARGIN = 10
+#: The first energy poll waits this long after the first state poll, so the two bursts of
+#: requests do not land together.
+ENERGY_DELAY = 60.0
+#: Seconds between one bucket series and the next, to stay under the per-minute quota.
+SERIES_SPACING = 2.0
 
 
 class VaillantParams(BaseModel):
@@ -87,6 +100,25 @@ def _slug(value: object) -> str:
     return str(value or "unknown").strip().lower()
 
 
+def _transient(error: BaseException) -> bool:
+    """Whether a failed call means "not now": a quota refusal (429, or 403 naming the quota) or
+    a server error."""
+    status = _http_status(error)
+    if status == 403:
+        return "quota" in str(error).lower()
+    return status in TRANSIENT
+
+
+def _pause_seconds(error: BaseException, longest: float) -> float:
+    """How long to wait after a refusal: the replenishment time Vaillant names plus a margin,
+    else ``longest``, and never more than ``longest``."""
+    match = REPLENISHED.search(str(error))
+    if match is None:
+        return longest
+    hours, minutes, seconds = (int(part) for part in match.groups())
+    return min(longest, hours * 3600 + minutes * 60 + seconds + QUOTA_MARGIN)
+
+
 def _http_status(error: BaseException) -> int | None:
     """The HTTP status of a failed call, when it was one."""
     status = getattr(error, "status", None)
@@ -121,34 +153,58 @@ class VaillantSource:
         self._prefix = params.table_prefix
 
     async def run(self, context: SourceContext) -> None:
-        """Log in, then poll state and energy on their schedules until something fails."""
+        """Log in, then poll state and energy on their schedules until something fails.
+
+        A quota or server error, at login or later, is waited out and the session kept or opened
+        again, so a source that is refused does not spend more of the quota restarting.
+        """
         path = context.state_dir / STATE_FILE
         cursors = _load(path)
         context.restore_progress([Progress(d, c) for d, c in cursors.items()])
-        next_energy = 0.0
-        next_state = 0.0
-        async with self._connect() as api:
-            while True:
-                now = context.clock()
-                try:
-                    await self._refresh(api, now)
-                    if now >= next_state:
-                        await self.poll_state(context, api)
-                        next_state = now + self._params.state_minutes * 60
-                    if now >= next_energy:
-                        await self.poll_energy(context, api, cursors, path)
-                        next_energy = now + self._params.energy_minutes * 60
-                except Exception as error:
-                    status = _http_status(error)
-                    if status not in TRANSIENT:
-                        raise
-                    message = f"Vaillant answered HTTP {status}; pausing"
-                    context.problem(message)
-                    logger.warning("%s for %.0f min", message, self._params.pause_minutes)
-                    await context.sleep(self._params.pause_minutes * 60)
-                    continue
-                context.succeeded()
-                await context.sleep(max(1.0, min(next_state, next_energy) - context.clock()))
+        schedule = {"state": context.clock(), "energy": context.clock() + ENERGY_DELAY}
+        while True:
+            try:
+                async with self._connect() as api:
+                    await self._poll_forever(context, api, cursors, path, schedule)
+            except Exception as error:
+                if not _transient(error):
+                    raise
+                await self._pause(context, error)
+
+    async def _poll_forever(
+        self,
+        context: SourceContext,
+        api: Api,
+        cursors: dict[str, int],
+        path: Path,
+        schedule: dict[str, float],
+    ) -> None:
+        """Poll whatever is due, then wait for the next thing that will be."""
+        while True:
+            now = context.clock()
+            try:
+                await self._refresh(api, now)
+                if now >= schedule["state"]:
+                    await self.poll_state(context, api)
+                    schedule["state"] = now + self._params.state_minutes * 60
+                if now >= schedule["energy"]:
+                    await self.poll_energy(context, api, cursors, path)
+                    schedule["energy"] = now + self._params.energy_minutes * 60
+            except Exception as error:
+                if not _transient(error):
+                    raise
+                await self._pause(context, error)
+                continue
+            context.succeeded()
+            await context.sleep(max(1.0, min(schedule.values()) - context.clock()))
+
+    async def _pause(self, context: SourceContext, error: BaseException) -> None:
+        """Wait out a quota or server error: as long as Vaillant says, or ``pause_minutes``."""
+        seconds = _pause_seconds(error, self._params.pause_minutes * 60)
+        message = f"Vaillant answered HTTP {_http_status(error)}; pausing {seconds:.0f} s"
+        context.problem(message)
+        logger.warning(message)
+        await context.sleep(seconds)
 
     async def _refresh(self, api: Api, now: float) -> None:
         """Renew the session when it is about to expire."""
@@ -204,7 +260,7 @@ class VaillantSource:
                 start = start.replace(minute=0, second=0, microsecond=0)
                 product = str(getattr(device, "product_name", "") or "")
                 points = []
-                async for series in api.get_data_by_device(device, self._hour, start, now):
+                async for series in self._series(context, api, device, start, now):
                     tags = {
                         "device": name,
                         "operation_mode": _slug(series.operation_mode),
@@ -227,6 +283,20 @@ class VaillantSource:
                     _save(path, cursors)
                 else:
                     context.problem(f"{name}: a batch was refused; its cursor stays put")
+
+    async def _series(
+        self, context: SourceContext, api: Api, device: Any, start: dt.datetime, end: dt.datetime
+    ) -> AsyncIterator[Any]:
+        """A device's bucket series one request at a time, spaced out to respect the quota."""
+        wanted = list(getattr(device, "data", None) or [])
+        for n, entry in enumerate(wanted or [None]):
+            if n:
+                await context.sleep(SERIES_SPACING)
+            single = copy.copy(device)
+            if entry is not None:
+                single.data = [entry]
+            async for series in api.get_data_by_device(single, self._hour, start, end):
+                yield series
 
     def _point(
         self, table: str, tags: dict[str, str], stamp: int, fields: dict[str, FieldValue]

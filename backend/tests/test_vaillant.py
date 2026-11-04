@@ -312,14 +312,14 @@ async def test_run_polls_on_schedule_refreshes_and_restores_cursors(tmp_path):
     api.oauth_session_expires = NOW + dt.timedelta(minutes=1)
     harness = Harness(tmp_path, api)
     harness.path.write_text(json.dumps({"heatpump": 123}))
-    harness.stop_after = 3
+    harness.stop_after = 2
     with pytest.raises(SystemExit):
         await harness.source.run(harness.context)
     # Restored first, then the first poll's progress.
     assert harness.progress[0] == ("heatpump", 123, None)
     assert api.refreshed >= 1
-    # State every 5 minutes; energy once in the first quarter hour.
-    assert harness.sleeps == [300.0, 300.0, 300.0]
+    # State at once, energy a minute later, then state again five minutes after the first.
+    assert harness.sleeps == [60.0, 240.0]
     energy_reads = {c[0] for c in api.calls}
     assert energy_reads == {"HEATPUMP", "ELECTRIC_AUXILIARY_HEATER"}
     assert len(api.calls) == 2
@@ -333,6 +333,66 @@ async def test_a_session_far_from_expiry_is_not_refreshed(tmp_path):
     with pytest.raises(SystemExit):
         await harness.source.run(harness.context)
     assert api.refreshed == 0
+
+
+async def test_a_quota_refusal_at_login_is_waited_out_for_as_long_as_vaillant_says(tmp_path):
+    api = energy_api()
+    attempts = []
+    quota = Refused(403)
+    quota.args = (
+        '403, message=\'Quota Exceeded, response was: { "message": "Out of call volume '
+        "quota. Quota will be replenished in 00:00:49.\" }'",
+    )
+
+    @contextlib.asynccontextmanager
+    async def connect():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise quota
+        yield api
+
+    harness = Harness(tmp_path, api)
+    harness.source = VaillantSource(params(), connect, "HOUR")
+    harness.stop_after = 2
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    assert harness.sleeps[0] == 49 + 10
+    assert len(attempts) == 2 and any("pausing 59 s" in p for p in harness.problems)
+
+
+async def test_a_403_that_is_not_about_the_quota_ends_the_run(tmp_path):
+    api = energy_api()
+    api.fail_with = [Refused(403)]
+    harness = Harness(tmp_path, api)
+    with pytest.raises(Refused):
+        await harness.source.run(harness.context)
+
+
+def test_a_long_replenishment_is_capped():
+    error = Exception("Quota will be replenished in 02:00:00")
+    assert vaillant._pause_seconds(error, 900.0) == 900.0
+
+
+async def test_series_are_requested_one_at_a_time_a_moment_apart(tmp_path):
+    @dataclass
+    class WithSeries(Device):
+        data: list = field(default_factory=list)
+
+    device = WithSeries("u", "HEATPUMP", data=["first", "second"])
+    seen = []
+
+    class Recording(FakeApi):
+        async def get_data_by_device(self, device, data_resolution, data_from, data_to):
+            seen.append(list(device.data))
+            for item in ():
+                yield item
+
+    api = Recording([System([device])])
+    harness = Harness(tmp_path, api)
+    await harness.source.poll_energy(harness.context, api, {}, harness.path)
+    assert seen == [["first"], ["second"]]
+    assert harness.sleeps == [vaillant.SERIES_SPACING]
+    assert device.data == ["first", "second"]  # the device itself is left as it was
 
 
 async def test_quota_and_server_errors_are_waited_out(tmp_path):
@@ -395,10 +455,11 @@ async def test_energy_can_be_due_while_state_is_not(tmp_path):
         yield api
 
     harness.source = VaillantSource(params(state_minutes=30, energy_minutes=15), connect, "HOUR")
-    harness.stop_after = 2
+    harness.stop_after = 3
     with pytest.raises(SystemExit):
         await harness.source.run(harness.context)
-    # Energy at 0 and 15 minutes, state only at 0.
+    # Energy at 1 and 16 minutes, state only at 0.
+    assert harness.sleeps == [60.0, 900.0, 840.0]
     assert len(api.calls) == 4
     states = [b for b in harness.batches if b and b[0].table == "vaillant_system"]
     assert len(states) <= 1

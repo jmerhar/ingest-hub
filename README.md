@@ -172,8 +172,10 @@ error.
   `vaillant_system`, `vaillant_circuit`, `vaillant_zone` and `vaillant_dhw` with their
   temperatures, pressures, setpoints and states, stamped when read.
 
-Vaillant limits how often its API may be called; a 429 or 5xx answer is waited out for
-`pause_minutes` (15) before the next attempt.
+Vaillant limits how often its API may be called. A refusal (429, or 403 naming the quota) or a
+server error, at login or later, is waited out for as long as Vaillant says the quota needs, or
+at most `pause_minutes` (15); bucket series are requested one at a time, a couple of seconds
+apart, and the first energy poll starts a minute after the first state poll.
 
 ## Replacing another writer
 
