@@ -10,12 +10,16 @@ Two kinds of data, on two schedules:
   A device without a cursor is read from its first data.
 - **Live state**, every ``state_minutes``: current power per device (``<prefix>power``) and the
   temperatures, pressures, setpoints and states of the system, its circuits, zones and hot-water
-  cylinders (``<prefix>system``, ``…circuit``, ``…zone``, ``…dhw``), stamped when read.
+  cylinders (``<prefix>system``, ``…circuit``, ``…zone``, ``…dhw``), stamped when read. The
+  energy poll reuses the devices this poll found rather than asking for them again.
 
-Vaillant enforces request quotas and has frequent incidents. A refused call (HTTP 429, or 403 naming
-the quota) or a server error, at login or later, is waited out for as long as Vaillant says or at
-most ``pause_minutes``, rather than retried at once; bucket series are requested one at a time,
-a moment apart.
+Vaillant counts requests per clock hour and refuses the rest of the hour once the quota is spent. A
+state poll takes about four requests and an energy poll one per series (ten for a heat pump with a
+backup heater), so the defaults stay near twenty an hour; each poll logs how many it took.
+
+A refused call (HTTP 429, or 403 naming the quota) or a server error, at login or later, is waited
+out for as long as Vaillant says or at most ``pause_minutes``, rather than retried at once; bucket
+series are requested one at a time, a moment apart.
 """
 
 from __future__ import annotations
@@ -69,10 +73,11 @@ class VaillantParams(BaseModel):
     country: str = "netherlands"
     table_prefix: str = Field("vaillant_", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     energy_minutes: float = Field(60, ge=15)
-    state_minutes: float = Field(5, ge=1)
+    state_minutes: float = Field(20, ge=1)
     lag_hours: float = Field(3, ge=0)
     rescan_hours: float = Field(48, ge=0)
-    pause_minutes: float = Field(15, gt=0)
+    #: The longest a quota refusal is waited out; Vaillant's quota is counted per hour.
+    pause_minutes: float = Field(60, gt=0)
 
 
 class Api(Protocol):
@@ -151,6 +156,8 @@ class VaillantSource:
         self._connect = connect
         self._hour = resolution
         self._prefix = params.table_prefix
+        #: The systems the latest state poll read, whose devices the energy poll reuses.
+        self._systems: list[Any] = []
 
     async def run(self, context: SourceContext) -> None:
         """Log in, then poll state and energy on their schedules until something fails.
@@ -219,7 +226,10 @@ class VaillantSource:
         """Read every system's live state and current power, stamped now."""
         stamp = int(context.clock())
         points: list[Point] = []
-        async for system in api.get_systems(include_connection_status=True, include_mpc=True):
+        before = _requests(api)
+        systems = [s async for s in api.get_systems(include_mpc=True)]
+        self._systems = systems
+        for system in systems:
             types = {getattr(d, "device_uuid", None): _slug(d.device_type) for d in system.devices}
             for entry in (system.mpc or {}).get("devices", []):
                 power = entry.get("current_power")
@@ -238,6 +248,7 @@ class VaillantSource:
                     if fields := _numbers(record):
                         tags = {table: str(record.get("index", 0))}
                         points.append(self._point(table, tags, stamp, fields))
+        _log_requests("state", api, before)
         await context.emit(points)
 
     async def poll_energy(
@@ -246,7 +257,9 @@ class VaillantSource:
         """Read each device's hourly buckets from its cursor (less the rescan) up to now."""
         params = self._params
         now = dt.datetime.fromtimestamp(context.clock(), dt.UTC)
-        async for system in api.get_systems():
+        before = _requests(api)
+        systems = self._systems or [s async for s in api.get_systems()]
+        for system in systems:
             for device in system.devices:
                 name = _slug(device.device_type)
                 cursor = cursors.get(name)
@@ -283,6 +296,7 @@ class VaillantSource:
                     _save(path, cursors)
                 else:
                     context.problem(f"{name}: a batch was refused; its cursor stays put")
+        _log_requests("energy", api, before)
 
     async def _series(
         self, context: SourceContext, api: Api, device: Any, start: dt.datetime, end: dt.datetime
@@ -309,6 +323,19 @@ class VaillantSource:
             fields,
             precision=Precision.SECONDS,
         )
+
+
+def _requests(api: Api) -> int | None:
+    """How many requests the API client has made, when it counts them (myPyllant's does)."""
+    count = getattr(getattr(api, "aiohttp_session", None), "request_count", None)
+    return count if isinstance(count, int) else None
+
+
+def _log_requests(poll: str, api: Api, before: int | None) -> None:
+    """Log how many requests a poll took, which is what Vaillant's quota counts."""
+    after = _requests(api)
+    if before is not None and after is not None:
+        logger.info("Vaillant %s poll: %d request(s)", poll, after - before)
 
 
 def _load(path: Path) -> dict[str, int]:

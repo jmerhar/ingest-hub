@@ -9,6 +9,7 @@ urls_file = "/run/secrets/alert_urls"   # Apprise URLs, one per line
 # failing_minutes = 30
 # backlog_minutes = 15
 # progress_hours = 3
+# progress_hours_by_source = { heating = 6 }   # sources whose progress trails by design
 # repeat_hours = 6
 
 # Where points go. Each destination is one database.
@@ -92,7 +93,7 @@ password_file = "/run/secrets/vaillant_password"
 # brand = "vaillant"
 # country = "netherlands"          # as myPyllant names the country the account belongs to
 # energy_minutes = 60
-# state_minutes = 5
+# state_minutes = 20
 # lag_hours = 3                    # progress stays this far behind each energy poll
 # rescan_hours = 48                # each energy poll re-reads this much before the cursor
-# pause_minutes = 15               # how long a 429 or 5xx answer is waited out
+# pause_minutes = 60               # the longest a quota or server error is waited out

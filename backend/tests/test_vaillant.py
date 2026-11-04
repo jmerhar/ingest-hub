@@ -67,8 +67,10 @@ class FakeApi:
     calls: list[tuple[str, dt.datetime, dt.datetime]] = field(default_factory=list)
     refreshed: int = 0
     fail_with: list[BaseException] = field(default_factory=list)
+    system_calls: int = 0
 
     async def get_systems(self, **kwargs: Any):
+        self.system_calls += 1
         if self.fail_with:
             raise self.fail_with.pop(0)
         for system in self.systems:
@@ -318,8 +320,10 @@ async def test_run_polls_on_schedule_refreshes_and_restores_cursors(tmp_path):
     # Restored first, then the first poll's progress.
     assert harness.progress[0] == ("heatpump", 123, None)
     assert api.refreshed >= 1
-    # State at once, energy a minute later, then state again five minutes after the first.
-    assert harness.sleeps == [60.0, 240.0]
+    # State at once, energy a minute later, then state again twenty minutes after the first.
+    assert harness.sleeps == [60.0, 1140.0]
+    # The energy poll reused the state poll's systems rather than asking for them again.
+    assert api.system_calls == 1
     energy_reads = {c[0] for c in api.calls}
     assert energy_reads == {"HEATPUMP", "ELECTRIC_AUXILIARY_HEATER"}
     assert len(api.calls) == 2
@@ -402,7 +406,7 @@ async def test_quota_and_server_errors_are_waited_out(tmp_path):
     harness.stop_after = 2
     with pytest.raises(SystemExit):
         await harness.source.run(harness.context)
-    assert harness.sleeps[0] == 15 * 60
+    assert harness.sleeps[0] == 60 * 60
     assert any("HTTP 429" in p for p in harness.problems)
 
 
@@ -463,3 +467,28 @@ async def test_energy_can_be_due_while_state_is_not(tmp_path):
     assert len(api.calls) == 4
     states = [b for b in harness.batches if b and b[0].table == "vaillant_system"]
     assert len(states) <= 1
+
+
+async def test_each_poll_logs_how_many_requests_it_took(tmp_path, caplog):
+    class Session:
+        request_count = 0
+
+    class Counting(FakeApi):
+        async def get_systems(self, **kwargs):
+            self.aiohttp_session.request_count += 4
+            async for system in super().get_systems(**kwargs):
+                yield system
+
+        async def get_data_by_device(self, *args):
+            self.aiohttp_session.request_count += 1
+            async for series in super().get_data_by_device(*args):
+                yield series
+
+    api = Counting([System([PUMP, HEATER])])
+    api.aiohttp_session = Session()
+    harness = Harness(tmp_path, api)
+    caplog.set_level("INFO")
+    await harness.source.poll_state(harness.context, api)
+    await harness.source.poll_energy(harness.context, api, {}, harness.path)
+    assert "Vaillant state poll: 4 request(s)" in caplog.text
+    assert "Vaillant energy poll: 2 request(s)" in caplog.text

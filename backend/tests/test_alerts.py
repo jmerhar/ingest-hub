@@ -203,3 +203,13 @@ def test_read_urls(tmp_path):
     path.write_text("# only a comment\n")
     with pytest.raises(ConfigError, match="names no Apprise URL"):
         read_urls(path)
+
+
+async def test_a_source_can_have_its_own_stall_threshold():
+    harness = Harness(progress_hours=3, progress_hours_by_source={"plugs": 6})
+    harness.sources = [healthy(progress={"dev-a": int((NOW - 4 * 3600) * 1000)})]
+    await harness.monitor.check()
+    assert harness.sender.sent == []
+    harness.sources = [healthy(progress={"dev-a": int((NOW - 7 * 3600) * 1000)})]
+    await harness.monitor.check()
+    assert harness.titles() == ["ingest-hub: plugs: stalled"]

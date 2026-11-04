@@ -7,8 +7,9 @@ Checked once a minute, per source:
 - **rejected**: its destination refused a batch for good since the last check;
 - **backlog**: its spool's oldest batch has waited longer than ``backlog_minutes``, so its
   destination has been unreachable or refusing writes for that long;
-- **stalled**: one of its streams' progress is more than ``progress_hours`` behind now, so a
-  consumer waiting for that stream to be complete is held up.
+- **stalled**: one of its streams' progress is more than ``progress_hours`` behind now (or that
+  source's entry in ``progress_hours_by_source``), so a consumer waiting for that stream to be
+  complete is held up.
 
 A problem is announced when it starts, repeated every ``repeat_hours`` while it lasts, and
 followed by a recovery message when it clears. Rejections are events rather than states, so each
@@ -43,6 +44,9 @@ class AlertsConfig(BaseModel):
     failing_minutes: float = Field(30, gt=0)
     backlog_minutes: float = Field(15, gt=0)
     progress_hours: float = Field(3, gt=0)
+    #: ``progress_hours`` for particular sources, by name, such as one whose progress trails by
+    #: design.
+    progress_hours_by_source: dict[str, float] = Field(default_factory=dict)
     repeat_hours: float = Field(6, gt=0)
 
 
@@ -96,10 +100,11 @@ def _problems(
             f"{spool.get('files', 0)} batch(es) waiting for its destination "
             f"for {oldest / 60:.0f} min"
         )
+    limit = config.progress_hours_by_source.get(str(source.get("name")), config.progress_hours)
     behind = {
         stream: (now * 1000 - until) / 3_600_000
         for stream, until in (source.get("progress") or {}).items()
-        if now * 1000 - until > config.progress_hours * 3_600_000
+        if now * 1000 - until > limit * 3_600_000
     }
     if behind:
         worst = max(behind.values())

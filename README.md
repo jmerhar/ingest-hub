@@ -72,7 +72,9 @@ checked once a minute:
 | stalled | one of its streams' `complete_until` is more than `progress_hours` (3) behind |
 | rejected | its destination refused batches for good since the last check |
 
-An ongoing problem is repeated every `repeat_hours` (6), and a message follows when it clears.
+`progress_hours_by_source` sets the stall threshold for particular sources, such as one whose
+progress trails by design (`{ heating = 6 }`). An ongoing problem is repeated every
+`repeat_hours` (6), and a message follows when it clears.
 
 ## What gets written
 
@@ -168,14 +170,17 @@ error.
   poll re-reads `rescan_hours` (48) before the device's cursor, since buckets arrive late and are
   revised, and the device's `complete_until` trails the poll by `lag_hours` (3). The consumption
   figures are Vaillant's own estimate, not a meter's.
-- **Live state**, every `state_minutes` (5): `vaillant_power` (current power per device) and
+- **Live state**, every `state_minutes` (20): `vaillant_power` (current power per device) and
   `vaillant_system`, `vaillant_circuit`, `vaillant_zone` and `vaillant_dhw` with their
   temperatures, pressures, setpoints and states, stamped when read.
 
-Vaillant limits how often its API may be called. A refusal (429, or 403 naming the quota) or a
-server error, at login or later, is waited out for as long as Vaillant says the quota needs, or
-at most `pause_minutes` (15); bucket series are requested one at a time, a couple of seconds
-apart, and the first energy poll starts a minute after the first state poll.
+Vaillant counts requests per clock hour and refuses the rest of the hour once its quota is spent.
+A state poll takes about four requests and an energy poll one per series (the energy poll reuses
+the devices the last state poll found), so the defaults stay near twenty an hour; every poll logs
+how many it took. A refusal (429, or 403 naming the quota) or a server error, at login or later,
+is waited out for as long as Vaillant says, at most `pause_minutes` (60); bucket series are
+requested one at a time, a couple of seconds apart, and the first energy poll starts a minute
+after the first state poll.
 
 ## Replacing another writer
 

@@ -8,7 +8,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 - A Vaillant source, through the myVAILLANT cloud: hourly energy per device, operation mode and
-  energy type, with progress per device, and the system's live state and current power.
+  energy type, with progress per device, and the system's live state and current power, within
+  Vaillant's hourly request quota.
+- `progress_hours_by_source` in `[alerts]`: a stall threshold for particular sources.
 
 ## 0.2.0 — 2026-11-04
 
