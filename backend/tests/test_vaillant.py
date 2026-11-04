@@ -14,7 +14,13 @@ from jigkit.sinks import Point, Precision
 from pydantic import ValidationError
 
 from ingest_hub.adapters import vaillant
-from ingest_hub.adapters.vaillant import STATE_FILE, VaillantParams, VaillantSource, _load
+from ingest_hub.adapters.vaillant import (
+    BUDGET_FILE,
+    STATE_FILE,
+    VaillantParams,
+    VaillantSource,
+    _load,
+)
 from ingest_hub.collect import PROGRESS_TABLE, SourceContext
 
 UTC = dt.UTC
@@ -492,3 +498,135 @@ async def test_each_poll_logs_how_many_requests_it_took(tmp_path, caplog):
     await harness.source.poll_energy(harness.context, api, {}, harness.path)
     assert "Vaillant state poll: 4 request(s)" in caplog.text
     assert "Vaillant energy poll: 2 request(s)" in caplog.text
+
+
+def budget_file(harness: Harness) -> dict:
+    return json.loads((harness.context.state_dir / BUDGET_FILE).read_text())
+
+
+def this_hour() -> int:
+    return int(NOW.timestamp() // 3600)
+
+
+def with_params(harness: Harness, api: FakeApi, **overrides) -> None:
+    @contextlib.asynccontextmanager
+    async def connect():
+        yield api
+
+    harness.source = VaillantSource(params(**overrides), connect, "HOUR")
+
+
+async def test_a_poll_that_does_not_fit_waits_for_the_next_hour_and_energy_holds_state(tmp_path):
+    api = energy_api()
+    harness = Harness(tmp_path, api)
+    # State is guessed at four requests, energy at one per device.
+    with_params(harness, api, requests_per_hour=5)
+    harness.stop_after = 3
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    # 10:20 state (4); 10:21 energy (2) does not fit, so it and state wait for 11:00:30, where
+    # energy runs (2) and state (4) no longer fits, so it waits for 12:00:30.
+    assert harness.sleeps == [60.0, 2370.0, 3600.0]
+    assert api.system_calls == 1 and len(api.calls) == 2
+    assert budget_file(harness) == {"hour": this_hour() + 1, "spent": 2}
+
+
+async def test_counted_requests_are_charged_and_remembered_as_each_polls_cost(tmp_path):
+    class Session:
+        request_count = 3  # logging in
+
+    class Counting(FakeApi):
+        async def get_systems(self, **kwargs):
+            self.aiohttp_session.request_count += 4
+            async for system in super().get_systems(**kwargs):
+                yield system
+
+        async def get_data_by_device(self, *args):
+            self.aiohttp_session.request_count += 1
+            async for series in super().get_data_by_device(*args):
+                yield series
+
+    api = Counting([System([PUMP, HEATER])])
+    api.aiohttp_session = Session()
+    harness = Harness(tmp_path, api)
+    harness.stop_after = 2
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    assert budget_file(harness) == {"hour": this_hour(), "spent": 3 + 4 + 2}
+    assert harness.source._costs == {"state": 4, "energy": 2}
+    assert harness.source._estimate("energy") == 2
+
+
+async def test_the_count_survives_a_restart_within_the_hour(tmp_path):
+    api = energy_api()
+    harness = Harness(tmp_path, api)
+    (tmp_path / BUDGET_FILE).write_text(json.dumps({"hour": this_hour(), "spent": 17}))
+    harness.stop_after = 2
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    # State waits; energy, due a minute later, waits too; both for 11:00:30.
+    assert harness.sleeps == [60.0, 2370.0]
+    assert api.system_calls == 0
+
+
+async def test_a_count_from_an_earlier_hour_is_not_carried_over(tmp_path):
+    api = energy_api()
+    harness = Harness(tmp_path, api)
+    (tmp_path / BUDGET_FILE).write_text(json.dumps({"hour": this_hour() - 1, "spent": 17}))
+    harness.stop_after = 1
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    assert api.system_calls == 1
+
+
+async def test_an_unreadable_count_starts_from_zero(tmp_path, caplog):
+    api = energy_api()
+    harness = Harness(tmp_path, api)
+    (tmp_path / BUDGET_FILE).write_text("{")
+    harness.stop_after = 1
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    assert "counting requests from zero" in caplog.text
+    assert api.system_calls == 1
+
+
+async def test_a_poll_larger_than_the_allowance_still_runs_in_an_empty_hour(tmp_path):
+    api = energy_api()
+    harness = Harness(tmp_path, api)
+    with_params(harness, api, requests_per_hour=1)
+    harness.stop_after = 2
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    assert api.system_calls == 1  # state, four requests, at 10:20
+    assert harness.sleeps == [60.0, 2370.0]  # energy waits for 11:00:30
+    assert api.calls == []
+
+
+async def test_a_quota_refusal_spends_the_rest_of_the_hour(tmp_path):
+    api = energy_api()
+    quota = Refused(403)
+    quota.args = ("Quota Exceeded. Quota will be replenished in 00:00:49.",)
+    api.fail_with = [quota]
+    harness = Harness(tmp_path, api)
+    harness.stop_after = 3
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    assert budget_file(harness) == {"hour": this_hour(), "spent": 18}
+    # After the pause, neither poll asks again before the next hour.
+    assert harness.sleeps == [59.0, 1.0, 2370.0]
+    assert api.system_calls == 1
+
+
+async def test_a_server_error_pauses_without_spending_the_hour(tmp_path):
+    api = energy_api()
+    api.fail_with = [Refused(503)]
+    harness = Harness(tmp_path, api)
+    with_params(harness, api, pause_minutes=5)
+    harness.stop_after = 2
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    # After the pause, both polls run within the same hour: energy first, finding the devices
+    # itself (charged its guess, 4, with no devices known yet), then state (4). The failed call
+    # does not spend the hour.
+    assert harness.sleeps[0] == 300 and api.system_calls == 3
+    assert budget_file(harness) == {"hour": this_hour(), "spent": 8}

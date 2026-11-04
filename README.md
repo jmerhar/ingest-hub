@@ -174,11 +174,14 @@ error.
   `vaillant_system`, `vaillant_circuit`, `vaillant_zone` and `vaillant_dhw` with their
   temperatures, pressures, setpoints and states, stamped when read.
 
-Vaillant counts requests per clock hour and refuses the rest of the hour once its quota is spent.
-A state poll takes about four requests and an energy poll one per series (the energy poll reuses
-the devices the last state poll found), so the defaults stay near twenty an hour; every poll logs
-how many it took. A refusal (429, or 403 naming the quota) or a server error, at login or later,
-is waited out for as long as Vaillant says, at most `pause_minutes` (60); bucket series are
+Vaillant counts requests per clock hour (about twenty) and refuses the rest of the hour once its
+quota is spent. A state poll takes about four requests and an energy poll one per series (the
+energy poll reuses the devices the last state poll found); every poll logs how many it took. The
+source counts its own requests against `requests_per_hour` (18), keeping the count in its state
+directory across restarts: a poll that would not fit in what is left of the hour waits for the
+next one, and a due energy poll holds state polls back until it has run. A refusal (429, or 403
+naming the quota) or a server error, at login or later, is waited out for as long as Vaillant
+says, at most `pause_minutes` (60), and a refusal counts the hour as spent; bucket series are
 requested one at a time, a couple of seconds apart, and the first energy poll starts a minute
 after the first state poll.
 

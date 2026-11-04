@@ -94,6 +94,8 @@ password_file = "/run/secrets/vaillant_password"
 # country = "netherlands"          # as myPyllant names the country the account belongs to
 # energy_minutes = 60
 # state_minutes = 20
+# requests_per_hour = 18           # kept under Vaillant's hourly quota
 # lag_hours = 3                    # progress stays this far behind each energy poll
 # rescan_hours = 48                # each energy poll re-reads this much before the cursor
 # pause_minutes = 60               # the longest a quota or server error is waited out
+

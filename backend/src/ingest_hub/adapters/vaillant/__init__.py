@@ -13,9 +13,12 @@ Two kinds of data, on two schedules:
   cylinders (``<prefix>system``, ``…circuit``, ``…zone``, ``…dhw``), stamped when read. The
   energy poll reuses the devices this poll found rather than asking for them again.
 
-Vaillant counts requests per clock hour and refuses the rest of the hour once the quota is spent. A
-state poll takes about four requests and an energy poll one per series (ten for a heat pump with a
-backup heater), so the defaults stay near twenty an hour; each poll logs how many it took.
+Vaillant counts requests per clock hour and refuses the rest of the hour once its quota is spent.
+A state poll takes about four requests and an energy poll one per series (ten for a heat pump with
+a backup heater). The source keeps its own count against ``requests_per_hour``, kept across
+restarts: a poll that would not fit in what is left of the hour waits for the next one, and a due
+energy poll holds back state polls until it has run, so it is never starved. Each poll logs how
+many requests it took.
 
 A refused call (HTTP 429, or 403 naming the quota) or a server error, at login or later, is waited
 out for as long as Vaillant says or at most ``pause_minutes``, rather than retried at once; bucket
@@ -46,6 +49,13 @@ logger = logging.getLogger(__name__)
 
 HOUR = dt.timedelta(hours=1)
 STATE_FILE = "vaillant.json"
+#: Requests spent in the current clock hour, so a restart does not start the count again.
+BUDGET_FILE = "vaillant-budget.json"
+#: Seconds after the top of the hour that a poll held back for the next hour waits, so it does not
+#: land before Vaillant's own count starts again.
+HOUR_MARGIN = 30.0
+#: What a state poll is assumed to cost until one has been counted.
+STATE_COST = 4
 #: A session this close to expiry is refreshed before the next call.
 REFRESH_MARGIN = dt.timedelta(minutes=2)
 #: HTTP statuses that mean "not now" rather than "never"; a 403 does too when it names the quota.
@@ -74,6 +84,8 @@ class VaillantParams(BaseModel):
     table_prefix: str = Field("vaillant_", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     energy_minutes: float = Field(60, ge=15)
     state_minutes: float = Field(20, ge=1)
+    #: Requests the source allows itself per clock hour, a little under Vaillant's quota.
+    requests_per_hour: int = Field(18, ge=1)
     lag_hours: float = Field(3, ge=0)
     rescan_hours: float = Field(48, ge=0)
     #: The longest a quota refusal is waited out; Vaillant's quota is counted per hour.
@@ -148,6 +160,60 @@ def _numbers(
     return fields
 
 
+class Budget:
+    """Requests spent in the current clock hour, against an hourly allowance."""
+
+    def __init__(self, allowance: int, path: Path) -> None:
+        self.allowance = allowance
+        self._path = path
+        self.hour, self.spent = _load_budget(path)
+
+    def _roll(self, now: float) -> None:
+        """Start the count again when a new clock hour has begun."""
+        hour = int(now // 3600)
+        if hour != self.hour:
+            self.hour, self.spent = hour, 0
+
+    def fits(self, now: float, cost: int) -> bool:
+        """Whether a poll of ``cost`` requests fits in what is left of this hour. An hour with
+        nothing spent takes any poll, so one larger than the allowance still runs."""
+        self._roll(now)
+        return self.spent == 0 or self.spent + cost <= self.allowance
+
+    def charge(self, now: float, requests: int) -> None:
+        """Count requests made in this hour."""
+        self._roll(now)
+        self.spent += requests
+        self._save()
+
+    def exhaust(self, now: float) -> None:
+        """Treat this hour as spent, after Vaillant refused a call for the quota."""
+        self._roll(now)
+        self.spent = max(self.spent, self.allowance)
+        self._save()
+
+    @staticmethod
+    def next_hour(now: float) -> float:
+        """When the next clock hour's count starts, with a margin."""
+        return (int(now // 3600) + 1) * 3600 + HOUR_MARGIN
+
+    def _save(self) -> None:
+        """Keep the count across restarts."""
+        _write_json(self._path, {"hour": self.hour, "spent": self.spent})
+
+
+def _load_budget(path: Path) -> tuple[int | None, int]:
+    """The saved hour and its count, or none when there is none or it cannot be read."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return int(data["hour"]), int(data["spent"])
+    except FileNotFoundError:
+        return None, 0
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        logger.error("cannot read %s (%s); counting requests from zero", path, error)
+        return None, 0
+
+
 class VaillantSource:
     """Polls one myVAILLANT account's systems."""
 
@@ -158,6 +224,10 @@ class VaillantSource:
         self._prefix = params.table_prefix
         #: The systems the latest state poll read, whose devices the energy poll reuses.
         self._systems: list[Any] = []
+        #: What each kind of poll cost when last counted.
+        self._costs: dict[str, int] = {}
+        #: The current session's request count when the budget was last charged.
+        self._seen = 0
 
     async def run(self, context: SourceContext) -> None:
         """Log in, then poll state and energy on their schedules until something fails.
@@ -168,15 +238,17 @@ class VaillantSource:
         path = context.state_dir / STATE_FILE
         cursors = _load(path)
         context.restore_progress([Progress(d, c) for d, c in cursors.items()])
+        budget = Budget(self._params.requests_per_hour, context.state_dir / BUDGET_FILE)
         schedule = {"state": context.clock(), "energy": context.clock() + ENERGY_DELAY}
         while True:
             try:
+                self._seen = 0
                 async with self._connect() as api:
-                    await self._poll_forever(context, api, cursors, path, schedule)
+                    await self._poll_forever(context, api, cursors, path, schedule, budget)
             except Exception as error:
                 if not _transient(error):
                     raise
-                await self._pause(context, error)
+                await self._pause(context, error, budget)
 
     async def _poll_forever(
         self,
@@ -185,28 +257,84 @@ class VaillantSource:
         cursors: dict[str, int],
         path: Path,
         schedule: dict[str, float],
+        budget: Budget,
     ) -> None:
-        """Poll whatever is due, then wait for the next thing that will be."""
+        """Poll whatever is due and fits in this hour's budget, then wait for the next thing that
+        will be. Energy goes first; when it does not fit, state waits with it."""
+        minutes = {"state": self._params.state_minutes, "energy": self._params.energy_minutes}
         while True:
             now = context.clock()
             try:
+                # Charges the login, and any session refresh, as well as the polls.
+                self._charge(api, budget, now, None)
                 await self._refresh(api, now)
-                if now >= schedule["state"]:
-                    await self.poll_state(context, api)
-                    schedule["state"] = now + self._params.state_minutes * 60
-                if now >= schedule["energy"]:
-                    await self.poll_energy(context, api, cursors, path)
-                    schedule["energy"] = now + self._params.energy_minutes * 60
+                for kind in ("energy", "state"):
+                    if now < schedule[kind]:
+                        continue
+                    cost = self._estimate(kind)
+                    if not budget.fits(now, cost):
+                        later = budget.next_hour(now)
+                        held = [kind, "state"] if kind == "energy" else [kind]
+                        for name in held:
+                            schedule[name] = max(schedule[name], later)
+                        logger.info(
+                            "Vaillant %s poll held until %s: %d of %d requests used this hour",
+                            kind,
+                            dt.datetime.fromtimestamp(later, dt.UTC).strftime("%H:%M:%S UTC"),
+                            budget.spent,
+                            budget.allowance,
+                        )
+                        if kind == "energy":
+                            break
+                        continue
+                    if kind == "state":
+                        await self.poll_state(context, api)
+                    else:
+                        await self.poll_energy(context, api, cursors, path)
+                    self._charge(api, budget, context.clock(), (kind, cost))
+                    schedule[kind] = now + minutes[kind] * 60
             except Exception as error:
                 if not _transient(error):
                     raise
-                await self._pause(context, error)
+                await self._pause(context, error, budget)
                 continue
             context.succeeded()
             await context.sleep(max(1.0, min(schedule.values()) - context.clock()))
 
-    async def _pause(self, context: SourceContext, error: BaseException) -> None:
+    def _estimate(self, kind: str) -> int:
+        """What a poll is expected to cost: what it cost when last counted, else a guess from
+        the devices known (one request per energy series, plus finding the devices)."""
+        if kind in self._costs:
+            return self._costs[kind]
+        if kind == "state":
+            return STATE_COST
+        series = sum(max(1, len(getattr(d, "data", None) or [])) for d in self._devices())
+        return series + (0 if self._systems else STATE_COST)
+
+    def _devices(self) -> list[Any]:
+        """Every device of the systems the latest state poll found."""
+        return [device for system in self._systems for device in system.devices]
+
+    def _charge(self, api: Api, budget: Budget, now: float, poll: tuple[str, int] | None) -> None:
+        """Charge the budget with the requests made since it was last charged.
+
+        With a client that counts its requests, that is the count since then, which for a poll
+        is also remembered as its cost. With one that does not, a poll is charged its estimate.
+        """
+        count = _requests(api)
+        if count is not None:
+            spent, self._seen = count - self._seen, count
+            if poll is not None:
+                self._costs[poll[0]] = spent
+        else:
+            spent = poll[1] if poll is not None else 0
+        if spent:
+            budget.charge(now, spent)
+
+    async def _pause(self, context: SourceContext, error: BaseException, budget: Budget) -> None:
         """Wait out a quota or server error: as long as Vaillant says, or ``pause_minutes``."""
+        if _http_status(error) in {403, 429}:
+            budget.exhaust(context.clock())
         seconds = _pause_seconds(error, self._params.pause_minutes * 60)
         message = f"Vaillant answered HTTP {_http_status(error)}; pausing {seconds:.0f} s"
         context.problem(message)
@@ -351,8 +479,13 @@ def _load(path: Path) -> dict[str, int]:
 
 def _save(path: Path, cursors: dict[str, int]) -> None:
     """Write the cursors atomically."""
+    _write_json(path, cursors)
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    """Write a small JSON document atomically."""
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps(cursors, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(temporary, path)
 
 
