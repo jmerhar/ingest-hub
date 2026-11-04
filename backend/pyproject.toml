@@ -13,6 +13,9 @@ dependencies = [
     "httpx2>=2.16",
     # The MQTT source.
     "aiomqtt>=2.5,<3",
+    # The Vaillant source's login and API client. Pinned: a release can change how it talks to
+    # Vaillant.
+    "myPyllant==0.9.18",
     "pydantic>=2.13",
     "pydantic-settings>=2.15",
     # Time zones for TZ, which the slim base image may not carry.
@@ -42,7 +45,11 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
 testpaths = ["tests"]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # myPyllant subclasses aiohttp's ClientSession, which aiohttp warns about on every session.
+    "ignore:Inheritance class CountingClientSession from ClientSession is discouraged:DeprecationWarning",
+]
 
 [tool.coverage.run]
 source = ["ingest_hub"]
