@@ -1,15 +1,9 @@
-# Shared by the backend, its tests, and the scripts in bin/.
-line-length = 100
-target-version = "py314"
+# Shared by the backend, its tests, and the scripts in bin/. The rules come from jmerhar/devtools.
+extend = ".devtools/config/ruff.toml"
 
-[lint]
-# On top of the defaults (pyflakes and pycodestyle errors): unused arguments and imports,
-# comprehension and builtin misuse, and the bug-prone patterns in flake8-bugbear.
-select = ["E", "F", "W", "I", "B", "C4", "UP", "ARG", "SIM"]
-
-[lint.per-file-ignores]
-# A pytest fixture is very often requested for what it does rather than for its value.
-"**/tests/**" = ["ARG001", "ARG002", "ARG005"]
+[lint.extend-per-file-ignores]
+# A test's stand-in for a function often has to accept arguments it does not use.
+"/**/tests/**" = ["ARG005"]
 
 [lint.isort]
 known-first-party = ["ingest_hub"]

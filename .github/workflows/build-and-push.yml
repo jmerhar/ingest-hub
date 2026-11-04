@@ -63,22 +63,26 @@ jobs:
         with:
           python-version: "3.14"
 
+      # The shared scripts and ruff rules from jmerhar/devtools, at the ref devtools.toml pins.
+      - name: Fetch the shared tooling
+        run: bin/devtools-fetch.sh
+
       - name: Shell scripts
         run: shellcheck bin/*.sh
 
       # The manifest names one version; a release tag must name it, with its changelog notes.
       - name: Versions agree
-        run: python3 bin/version.py check ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 .devtools/bin/version.py check ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
       - name: Install ruff
         run: pip install ruff
 
       - name: Ruff
-        run: bin/ci-ruff.sh
+        run: .devtools/bin/ci-ruff.sh
 
       # The runner has Docker, so `config` resolves and validates each combination that is run.
       - name: Compose files parse
-        run: bin/check-compose.sh
+        run: .devtools/bin/check-compose.sh
 
   coverage:
     needs: [test]
@@ -148,7 +152,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
           # edge for deployments that follow the branch, an immutable tag so a specific build can
           # always be pinned or rolled back to, and on a release tag its version, minor and major
-          # line (the action makes no bare major tag for a 0.x release, which bin/version.py's
+          # line (the action makes no bare major tag for a 0.x release, which devtools' version.py's
           # compose pin allows for).
           tags: |
             type=edge
@@ -177,7 +181,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Fetch the shared tooling
+        run: bin/devtools-fetch.sh
+
       - name: Create the GitHub release from the changelog
-        run: bin/github-release.sh "${{ github.ref_name }}"
+        run: .devtools/bin/github-release.sh "${{ github.ref_name }}"
         env:
           GH_TOKEN: ${{ github.token }}

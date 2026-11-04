@@ -20,8 +20,6 @@ junit/
 .ruff_cache/
 # Staging directory the coverage publish step assembles (CI only)
 coverage-upload/
-# Shared coverage tooling, fetched on demand by `make coverage`
-.coverage-report.py
 
 # Editor and OS junk
 .idea/

@@ -1,8 +1,11 @@
-.PHONY: help install run check-config up down logs build test coverage lint check release clean
+.PHONY: install run check-config up down logs build test coverage lint check release clean
 
-help: ## Show available commands
-	@grep -E '^[a-zA-Z_-]+:.*##|^##@' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*## "}; /^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5); next} {printf "  \033[36mmake %-14s\033[0m %s\n", $$1, $$2}'
+# help, devtools-update and coverage-tooling come from jmerhar/devtools; make fetches them on the
+# first run and whenever devtools.toml changes.
+.DEFAULT_GOAL := help
+include .devtools/make/devtools.mk
+.devtools/make/devtools.mk: devtools.toml bin/devtools-fetch.sh
+	bin/devtools-fetch.sh
 
 ##@ Setup
 
@@ -40,16 +43,16 @@ coverage: ## Run the suite with coverage and print the summary
 	bin/coverage.sh --format md
 
 lint: ## ShellCheck, ruff, versions, compose files
-	bin/lint.sh
+	.devtools/bin/lint.sh
 
 check: lint coverage ## Everything (gate a commit on this)
 
 ##@ Release
 
 release: ## Cut a release from CHANGELOG.md (usage: make release VERSION=X.Y.Z; then push both)
-	bin/release.sh $(VERSION)
+	.devtools/bin/release.sh $(VERSION)
 
 clean: ## Remove build and coverage output (all regenerable)
 	rm -rf backend/htmlcov backend/coverage.xml backend/coverage.json backend/.coverage \
-	       backend/junit coverage-upload .coverage-report.py
+	       backend/junit coverage-upload
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

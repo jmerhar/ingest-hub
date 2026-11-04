@@ -23,7 +23,8 @@ see.
   library, never the rest of ingest_hub, so it can move into jigkit; keep it that way.
 - `backend/src/ingest_hub/adapters/` — one package per source kind, registered in
   `adapters/__init__.py`. Nothing adapter- or consumer-specific goes into `collect/`.
-- `bin/` — every Makefile target and CI step calls a script here.
+- `bin/` — the project's own scripts (tests, coverage, the devtools fetcher). Lint, versioning
+  and releases come from jmerhar/devtools, fetched into `.devtools/` as `devtools.toml` lists.
 
 ## jigkit
 

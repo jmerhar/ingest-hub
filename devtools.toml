@@ -1,0 +1,34 @@
+# Shared build tooling from jmerhar/devtools, fetched into .devtools/ by bin/devtools-fetch.sh.
+[fetch]
+ref = "v1"
+files = [
+  "make/devtools.mk",
+  "config/ruff.toml",
+  "bin/lint.sh",
+  "bin/ci-ruff.sh",
+  "bin/check-compose.sh",
+  "bin/version.py",
+  "bin/release.sh",
+  "bin/github-release.sh",
+]
+coverage = true
+
+# Every check `make lint` runs.
+[lint]
+checks = ["shellcheck", "ruff", "version", "compose"]
+ruff = "backend/.venv/bin/ruff"
+
+# Each combination of compose files that is run, validated by `make lint` and CI.
+[compose]
+stacks = [
+  ["docker-compose.yml"],
+  ["docker-compose.yml", "docker-compose.build.yml"],
+]
+
+# Where the release version is written; the compose file follows the image's release line.
+[version]
+pyprojects = ["backend/pyproject.toml"]
+images = ["ghcr.io/jmerhar/ingest-hub"]
+
+[release]
+title = "ingest-hub"
