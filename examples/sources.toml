@@ -99,3 +99,13 @@ password_file = "/run/secrets/vaillant_password"
 # rescan_hours = 48                # each energy poll re-reads this much before the cursor
 # pause_minutes = 60               # the longest a quota or server error is waited out
 
+# Vaillant's EU Data Act exports, imported from the files dropped into the inbox.
+[sources.heating_export]
+kind = "vaillant_export"
+destination = "home"
+
+[sources.heating_export.params]
+inbox = "/data/inbox/vaillant"
+# scan_minutes = 10
+# The vaillant source's device names, so both write to the same series.
+devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
