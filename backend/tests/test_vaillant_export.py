@@ -394,3 +394,90 @@ def test_the_adapter_is_registered_and_validates_its_params(tmp_path):
         VaillantExportParams.model_validate({})
     with pytest.raises(ValidationError, match="scan_minutes"):
         params(tmp_path, scan_minutes=0)
+
+
+def stated(value: Any) -> dict:
+    return {"value": value, "metadata": None, "lastUpdated": 1793725206000}
+
+
+STATE = entry(
+    "system-control.state",
+    {
+        "data": {
+            "systemParameters": {
+                "state": {
+                    "outdoorTemperature": stated(7.03125),
+                    "outdoorTemperatureAverage24h": stated(8.5),
+                    "systemWaterPressure": stated(2),
+                    "energyManagerState": stated("STANDBY"),
+                    "systemOff": stated(False),
+                    "currentFlowTemperature": stated(None),
+                }
+            },
+            "zoneSettings": {
+                "0": {
+                    "state": {
+                        "currentRoomTemperature": stated(22.1625),
+                        "currentRoomHumidity": stated(51.0),
+                        "quickVetoEndDateTime": stated(0),
+                        "quickVetoStartTimestamp": stated(0),
+                        "nested": stated({"a": 1}),
+                    },
+                    "configuration": {"ignored": stated(1)},
+                },
+                "1": {"state": {}},
+                "2": None,
+            },
+            "circuitSettings": {"0": {"state": {"circuitState": stated("STANDBY")}}},
+            "domesticHotWaterSettings": {
+                "255": {
+                    "state": {
+                        "currentCircuitTemperature": stated(54.5),
+                        "currentSpecialFunction": stated("REGULAR"),
+                    }
+                }
+            },
+            "ventilationSettings": {},
+        }
+    },
+)
+
+
+def test_the_controller_state_goes_into_the_live_sources_tables(tmp_path):
+    path = write_export(
+        tmp_path / "x.json",
+        [
+            STATE,
+            entry("system-control.state", {"data": {"zoneSettings": [], "systemParameters": {}}}),
+            entry("system-control.state", {"data": {"circuitSettings": {"0": {"state": [1]}}}}),
+        ],
+    )
+    points, counts = export_points(path, params(tmp_path))
+    assert rows(points) == [
+        (
+            "vaillant_system",
+            {},
+            MS0,
+            {
+                "outdoor_temperature": 7.03125,
+                "outdoor_temperature_average24h": 8.5,
+                "system_water_pressure": 2.0,
+                "energy_manager_state": "STANDBY",
+                "system_off": False,
+            },
+        ),
+        (
+            "vaillant_zone",
+            {"zone": "0"},
+            MS0,
+            {"current_room_temperature": 22.1625, "current_room_humidity": 51.0},
+        ),
+        ("vaillant_circuit", {"circuit": "0"}, MS0, {"circuit_state": "STANDBY"}),
+        (
+            "vaillant_dhw",
+            {"dhw": "255"},
+            MS0,
+            {"current_dhw_temperature": 54.5, "current_special_function": "REGULAR"},
+        ),
+    ]
+    assert counts == {"system": 1, "zone": 1, "circuit": 1, "dhw": 1}

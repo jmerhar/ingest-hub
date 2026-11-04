@@ -189,20 +189,22 @@ after the first state poll.
 
 `kind = "vaillant_export"` imports the data exports a myVAILLANT user can download under the EU
 Data Act (from Vaillant's portal at eu-data-act.vaillant-group.com). An export is a JSON array of
-messages and holds far more than the app's API: power every minute or two, the heat pump's eBUS
-readings every few minutes, and hourly running totals. Drop export files into `inbox`; every
+messages and holds far more than the app's API: the controller's state every few minutes, power
+every minute or two, the heat pump's eBUS readings every few minutes, and hourly running totals. Drop export files into `inbox`; every
 `scan_minutes` (10) the source imports each `*.json` file there and moves it to `imported/`, or to
 `failed/` when it cannot be read. Importing overlapping exports writes the same points again.
 
 | Table | From | Tags | Fields |
 |---|---|---|---|
+| `vaillant_system`, `_zone`, `_circuit`, `_dhw` | `system-control.state` | `zone`, `circuit`, `dhw` (index) | the controller's state, the `vaillant` source's tables and columns |
 | `vaillant_power` | `status_message_mpc` | `device` | `current_power` (W), the `vaillant` source's table |
 | `vaillant_ebus` | `ebus.responses.interpreted` | `device` | one per data point, in snake case |
 | `vaillant_stats` | `end-user-system-realtime-stats.inbound` | `device`, `operation_mode` | `operating_minutes`, `on_off_cycles` (running totals) |
 | `vaillant_energy_total` | `end-user-system-emf.inbound` | `device`, `operation_mode`, `energy_type` | `wh` (running total) |
 
 eBUS values are floats when numeric, booleans for `on`/`off` and `true`/`false`, and strings
-otherwise; `NO_VALUE` is left out. Every point is stamped with its message's timestamp. A device is
+otherwise; `NO_VALUE` is left out. Controller state names are the export's in snake case, as the app's API
+gives them, except `currentCircuitTemperature`, written as `current_dhw_temperature`. Every point is stamped with its message's timestamp. A device is
 named by its type in the export's topology (`heat_pump`, `hp_accessory`), or `ebus_<address>`;
 `devices` maps those names to others, such as the `vaillant` source's:
 

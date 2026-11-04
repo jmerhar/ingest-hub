@@ -2,8 +2,17 @@
 
 The export a myVAILLANT user downloads from Vaillant's EU Data Act portal is one JSON array of
 messages, each ``{"topic", "function", "timestamp", "message_value"}`` with the message itself
-as a JSON string. It carries far more detail than the myVAILLANT app's API, and four kinds of
-message are imported, each at the message's timestamp, tagged ``device``:
+as a JSON string. It carries far more detail than the myVAILLANT app's API, and five kinds of
+message are imported, each at the message's timestamp:
+
+- the controller's state (``system-control.state``, every few minutes): the same values the
+  ``vaillant`` source polls, into its tables and columns: ``<prefix>system``, and
+  ``<prefix>zone``, ``<prefix>circuit`` and ``<prefix>dhw`` tagged ``zone``, ``circuit`` and
+  ``dhw`` with their index. Names are the export's in snake case, as the app's API gives them,
+  except the hot-water temperature (``currentCircuitTemperature``), written as
+  ``current_dhw_temperature`` as the API names it; quick-veto times are left out.
+
+The other four are tagged ``device``:
 
 - live power (``gateway.hem.message.received`` / ``status_message_mpc``, every minute or two):
   ``<prefix>power``, field ``current_power`` in W, the table and field the ``vaillant`` source
@@ -56,6 +65,14 @@ NO_VALUE = frozenset({"", "NO_VALUE"})
 TRUE = frozenset({"on", "true"})
 FALSE = frozenset({"off", "false"})
 NUMBER = re.compile(r"^-?\d+(\.\d+)?$")
+#: The controller state's sections: (key in ``data``, table, index tag); the system has no index.
+STATE_SECTIONS = (
+    ("zoneSettings", "zone", "zone"),
+    ("circuitSettings", "circuit", "circuit"),
+    ("domesticHotWaterSettings", "dhw", "dhw"),
+)
+#: Controller state names the export spells differently from the app's API, by table.
+STATE_RENAMES = {"dhw": {"current_circuit_temperature": "current_dhw_temperature"}}
 #: A word boundary inside a camelCase name: ``flowTemperature``, ``BuildPumpPWM``.
 CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
@@ -109,6 +126,23 @@ def _ms(timestamp: str) -> int:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=dt.UTC)
     return int(moment.timestamp() * 1000)
+
+
+def _state_fields(state: object, renames: dict[str, str]) -> dict[str, FieldValue]:
+    """A controller state section's values as fields. Each value is ``{"value", "metadata",
+    "lastUpdated"}``; one without a value is left out, as are quick-veto times."""
+    fields: dict[str, FieldValue] = {}
+    if not isinstance(state, dict):
+        return fields
+    for key, entry in state.items():
+        raw = entry.get("value") if isinstance(entry, dict) else entry
+        name = _snake(key)
+        if name.endswith(("_date_time", "_timestamp")) or isinstance(raw, dict | list):
+            continue
+        value = _value(raw)
+        if value is not None:
+            fields[renames.get(name, name)] = value
+    return fields
 
 
 def read_entries(path: Path) -> list[Any]:
@@ -187,6 +221,22 @@ class Points:
             yield from self._stats(ms, message)
         elif topic == "end-user-system-emf.inbound":
             yield from self._energy(ms, message)
+        elif topic == "system-control.state":
+            yield from self._state(ms, message)
+
+    def _state(self, ms: int, message: dict) -> Iterable[Point]:
+        data = message.get("data") or {}
+        system = (data.get("systemParameters") or {}).get("state")
+        if fields := _state_fields(system, {}):
+            yield self._point("system", {}, ms, fields)
+        for key, table, tag in STATE_SECTIONS:
+            section = data.get(key)
+            if not isinstance(section, dict):
+                continue
+            for index, settings in section.items():
+                state = (settings or {}).get("state") if isinstance(settings, dict) else None
+                if fields := _state_fields(state, STATE_RENAMES.get(table, {})):
+                    yield self._point(table, {tag: str(index)}, ms, fields)
 
     def _power(self, ms: int, message: dict) -> Iterable[Point]:
         for status in message.get("mpc_device_status") or []:
