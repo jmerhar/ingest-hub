@@ -192,14 +192,14 @@ after the first state poll.
 
 ### Vaillant data exports
 
-`kind = "vaillant_export"` imports the data exports a myVAILLANT user can download under the EU
-Data Act (from Vaillant's portal at eu-data-act.vaillant-group.com). An export is a JSON array of
+`kind = "vaillant_export"` imports the data exports a myVAILLANT user can download under the EU Data
+Act (from Vaillant's portal at eu-data-act.vaillant-group.com). An export is a JSON array of
 messages and holds far more than the app's API: the controller's state every few minutes, power
-every minute or two, the heat pump's eBUS readings every few minutes, and hourly running
-totals. Upload an export on the status page, or drop it into `inbox`; the source imports each
-`*.json` file there at once when uploaded, otherwise every `scan_minutes` (10), and moves it to
-`imported/`, or to `failed/` when it cannot be read. Importing overlapping exports writes the same
-points again.
+every minute or two while it changes (hourly when idle), the heat pump's eBUS readings every few
+minutes, and hourly running totals. Upload an export on the status page, or drop it into `inbox`;
+the source imports each `*.json` file there at once when uploaded, otherwise every `scan_minutes`
+(10), and moves it to `imported/`, or to `failed/` when it cannot be read. Importing overlapping
+exports writes the same points again.
 
 | Table | From | Tags | Fields |
 |---|---|---|---|

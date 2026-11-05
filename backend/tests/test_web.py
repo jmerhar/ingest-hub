@@ -204,6 +204,7 @@ def test_an_upload_never_replaces_a_file_of_the_same_name(tmp_path):
     assert web._write(tmp_path, "a.json", b"2") == "a-2.json"
     assert web._write(tmp_path, "a.json", b"3") == "a-3.json"
     assert (tmp_path / "a.json").read_bytes() == b"1"
+    assert (tmp_path / "a-2.json").stat().st_mode & 0o777 == 0o600
     assert not list(tmp_path.glob(".*.part"))
 
 

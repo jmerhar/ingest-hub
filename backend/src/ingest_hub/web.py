@@ -94,7 +94,8 @@ def saved_name(filename: str, suffixes: tuple[str, ...], moment: float) -> str |
 
 def _write(inbox: Path, name: str, body: bytes) -> str:
     """Write a file into an inbox without a reader ever seeing it half-written, keeping any file
-    already there under that name; returns the name it was saved under."""
+    already there under that name, readable by this user only, since an upload may hold anything;
+    returns the name it was saved under."""
     inbox.mkdir(parents=True, exist_ok=True)
     stem, dot, suffix = name.rpartition(".")
     target, n = inbox / name, 1
@@ -102,7 +103,8 @@ def _write(inbox: Path, name: str, body: bytes) -> str:
         n += 1
         target = inbox / f"{stem}-{n}{dot}{suffix}"
     partial = inbox / f".{target.name}.part"
-    partial.write_bytes(body)
+    with os.fdopen(os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as file:
+        file.write(body)
     os.replace(partial, target)
     return target.name
 

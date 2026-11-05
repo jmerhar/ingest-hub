@@ -14,7 +14,8 @@ message are imported, each at the message's timestamp:
 
 The other four are tagged ``device``:
 
-- live power (``gateway.hem.message.received`` / ``status_message_mpc``, every minute or two):
+- live power (``gateway.hem.message.received`` / ``status_message_mpc``, every minute or two
+  while it changes, hourly otherwise):
   ``<prefix>power``, field ``current_power`` in W, the table and field the ``vaillant`` source
   writes its own readings to;
 - interpreted eBUS readings (``ebus.responses.interpreted``, every few minutes): ``<prefix>ebus``,
