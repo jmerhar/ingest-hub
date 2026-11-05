@@ -21,8 +21,8 @@ energy poll holds back state polls until it has run, so it is never starved. Eac
 many requests it took.
 
 A refused call (HTTP 429, or 403 naming the quota) or a server error, at login or later, is waited
-out for as long as Vaillant says or at most ``pause_minutes``, rather than retried at once; bucket
-series are requested one at a time, a moment apart.
+out for as long as Vaillant says or at most ``pause_minutes``, rather than retried at once; only a
+server error is reported as a problem. Bucket series are requested one at a time, a moment apart.
 """
 
 from __future__ import annotations
@@ -332,12 +332,20 @@ class VaillantSource:
             budget.charge(now, spent)
 
     async def _pause(self, context: SourceContext, error: BaseException, budget: Budget) -> None:
-        """Wait out a quota or server error: as long as Vaillant says, or ``pause_minutes``."""
-        if _http_status(error) in {403, 429}:
-            budget.exhaust(context.clock())
+        """Wait out a quota or server error: as long as Vaillant says, or ``pause_minutes``.
+
+        A quota refusal is logged but not reported as a problem: something else using the same
+        account can spend the quota first, and the wait ends with the hour. A refusal that keeps
+        coming still shows, as writes and progress that stop. A server error is reported.
+        """
+        status = _http_status(error)
         seconds = _pause_seconds(error, self._params.pause_minutes * 60)
-        message = f"Vaillant answered HTTP {_http_status(error)}; pausing {seconds:.0f} s"
-        context.problem(message)
+        message = f"Vaillant answered HTTP {status}; pausing {seconds:.0f} s"
+        if status in {403, 429}:
+            budget.exhaust(context.clock())
+            message += " (the quota was spent before the source's own budget)"
+        else:
+            context.problem(message)
         logger.warning(message)
         await context.sleep(seconds)
 

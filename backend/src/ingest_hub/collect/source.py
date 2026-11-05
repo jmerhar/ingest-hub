@@ -7,7 +7,7 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from jigkit.sinks import Point, Precision
 
@@ -40,6 +40,20 @@ class Source(Protocol):
         Raising ends this run; the runtime logs the error and starts the source again after its
         back-off. Returning is treated the same way, since a source is meant to run for ever.
         """
+
+
+@runtime_checkable
+class AcceptsFiles(Protocol):
+    """A source that imports files dropped into a folder, which can also be handed to it, such as
+    through an upload."""
+
+    #: The folder the source imports from.
+    inbox: Path
+    #: The name endings (such as ``.json``) of the files it imports.
+    file_suffixes: tuple[str, ...]
+
+    def wake(self) -> None:
+        """Look at the inbox now, rather than at the next scan."""
 
 
 Emit = Callable[[list[Point]], Awaitable[bool]]

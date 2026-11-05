@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 
@@ -133,3 +134,90 @@ def test_the_probe_asks_health_when_the_web_interface_is_on(monkeypatch):
     monkeypatch.setenv("WEB_PORT", "8000")
     assert healthcheck.main() == 0
     assert calls == [("http://127.0.0.1:8000/health", {"status": "ok"})]
+
+
+EXPORT = [
+    {
+        "topic": "gateway.hem.message.received",
+        "function": "status_message_mpc",
+        "timestamp": "2026-11-03T17:00:06.839+00:00",
+        "message_value": '{"mpc_device_status": [{"ebus_address": 8, "current_power": 5}]}',
+    }
+]
+
+
+async def test_a_file_handed_to_a_source_is_saved_in_its_inbox_and_imported_at_once(
+    environment, secrets, monkeypatch
+):
+    inbox = environment / "inbox"
+    extra = f"""
+[sources.exports]
+kind = "vaillant_export"
+destination = "home"
+
+[sources.exports.params]
+inbox = "{inbox}"
+"""
+    async with serving(StubServer(respond=influx)) as db:
+        write_config(environment / "config" / "sources.toml", db.url, db.url, secrets, extra)
+        app = web.build_app(Settings(), only="exports")
+        transport = httpx2.ASGITransport(app=app)
+        async with (
+            httpx2.AsyncClient(transport=transport, base_url="http://hub") as client,
+            app.router.lifespan_context(app),
+        ):
+            (source,) = (await client.get("/api/status")).json()["sources"]
+            assert source["accepts_files"] == [".json"]
+
+            def post(name, body=b"[]", headers=None):
+                return client.post(
+                    f"/api/sources/{name}/files",
+                    content=body,
+                    headers={"X-Filename": "export.json"} if headers is None else headers,
+                )
+
+            assert (await post("plugs")).status_code == 404  # not running
+            assert (await post("nowhere")).status_code == 404
+            assert (await post("exports", headers={})).status_code == 400
+            txt = await post("exports", headers={"X-Filename": "notes.txt"})
+            assert txt.status_code == 415 and ".json" in txt.json()["error"]
+            assert (await post("exports", body=b"")).status_code == 400
+            monkeypatch.setattr(web, "UPLOAD_MAX_BYTES", 10)
+            assert (await post("exports", body=b"[" + b" " * 20 + b"]")).status_code == 413
+            monkeypatch.undo()
+
+            body = json.dumps(EXPORT).encode()
+            saved = await post("exports", body, {"X-Filename": "../my export.json"})
+            assert saved.status_code == 201
+            name = saved.json()["saved"]
+            assert name.endswith("Z-my-export.json") and saved.json()["bytes"] == len(body)
+            # Woken by the upload, the source imports it long before its next scan.
+            async with asyncio.timeout(10):
+                while not (inbox / "imported" / name).exists():
+                    await asyncio.sleep(0.02)
+            doc = (await client.get("/api/status")).json()
+            assert doc["sources"][0]["points_emitted"] == 1
+
+
+def test_an_upload_never_replaces_a_file_of_the_same_name(tmp_path):
+    assert web._write(tmp_path, "a.json", b"1") == "a.json"
+    assert web._write(tmp_path, "a.json", b"2") == "a-2.json"
+    assert web._write(tmp_path, "a.json", b"3") == "a-3.json"
+    assert (tmp_path / "a.json").read_bytes() == b"1"
+    assert not list(tmp_path.glob(".*.part"))
+
+
+@pytest.mark.parametrize(
+    ("filename", "saved"),
+    [
+        ("euda-data-2026-11-05.json", "20261105T090000Z-euda-data-2026-11-05.json"),
+        ("C:\\Users\\x\\Export.JSON", "20261105T090000Z-Export.JSON"),
+        ("../../etc/passwd.json", "20261105T090000Z-passwd.json"),
+        ("my export (1).json", "20261105T090000Z-my-export-1-.json"),
+        ("export.txt", None),
+        ("...", None),
+    ],
+)
+def test_saved_names(filename, saved):
+    moment = 1793869200.0  # 2026-11-05 09:00:00 UTC
+    assert web.saved_name(filename, (".json",), moment) == saved

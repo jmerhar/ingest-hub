@@ -37,6 +37,8 @@ No progress is published: exports arrive whenever someone drops one.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import datetime as dt
 import json
 import logging
@@ -324,18 +326,39 @@ def export_points(path: Path, params: VaillantExportParams) -> tuple[list[Point]
 
 
 class VaillantExportSource:
-    """Imports the exports dropped into a folder."""
+    """Imports the exports dropped into a folder, or handed to it through an upload."""
+
+    file_suffixes = (".json",)
 
     def __init__(self, params: VaillantExportParams) -> None:
         self._params = params
+        self.inbox = params.inbox
+        self._woken = asyncio.Event()
+
+    def wake(self) -> None:
+        """Scan the inbox now rather than at the next scan, for a file just saved there."""
+        self._woken.set()
 
     async def run(self, context: SourceContext) -> None:
-        """Scan the inbox every ``scan_minutes`` for ever."""
-        self._params.inbox.mkdir(parents=True, exist_ok=True)
+        """Scan the inbox every ``scan_minutes``, and whenever woken, for ever."""
+        self.inbox.mkdir(parents=True, exist_ok=True)
         while True:
+            self._woken.clear()
             await self.scan(context)
             context.succeeded()
-            await context.sleep(self._params.scan_minutes * 60)
+            await self._wait(context, self._params.scan_minutes * 60)
+
+    async def _wait(self, context: SourceContext, seconds: float) -> None:
+        """Wait for the next scan, or until woken."""
+        timer = asyncio.ensure_future(context.sleep(seconds))
+        woken = asyncio.ensure_future(self._woken.wait())
+        done, pending = await asyncio.wait({timer, woken}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        for task in done:
+            task.result()
 
     async def scan(self, context: SourceContext) -> None:
         """Import every export waiting in the inbox, oldest name first."""

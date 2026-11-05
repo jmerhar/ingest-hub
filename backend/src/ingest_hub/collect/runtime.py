@@ -104,6 +104,10 @@ class Runtime:
         """Each source's status, in the order the sources were given."""
         return [slot.status for slot in self._slots]
 
+    def source(self, name: str) -> Source | None:
+        """The running source of that name, if there is one."""
+        return next((slot.spec.source for slot in self._slots if slot.spec.name == name), None)
+
     def snapshot(self) -> dict[str, Any]:
         """The whole runtime's status as plain data."""
         return {

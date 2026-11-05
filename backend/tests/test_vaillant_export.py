@@ -288,6 +288,10 @@ def test_names_in_snake_case(name, snake):
     assert _snake(name) == snake
 
 
+class Stop(Exception):
+    """Ends a source's run loop in a test."""
+
+
 class Harness:
     def __init__(self, tmp_path: Path, **overrides) -> None:
         self.params = params(tmp_path, **overrides)
@@ -304,7 +308,7 @@ class Harness:
 
         async def sleep(seconds: float) -> None:
             self.sleeps.append(seconds)
-            raise SystemExit
+            raise Stop
 
         def succeeded() -> None:
             self.successes += 1
@@ -323,7 +327,7 @@ class Harness:
 async def test_a_scan_imports_each_export_and_moves_it_aside(tmp_path, caplog):
     harness = Harness(tmp_path)
     caplog.set_level("INFO")
-    with pytest.raises(SystemExit):
+    with pytest.raises(Stop):
         await harness.source.run(harness.context)  # creates the inbox; nothing in it yet
     assert harness.inbox.is_dir() and harness.batches == [] and harness.successes == 1
     assert harness.sleeps == [600.0]

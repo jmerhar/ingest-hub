@@ -8,6 +8,11 @@ The application's lifespan runs the sources and alerts, so one process both coll
   and would only interrupt spooling.
 - ``GET /api/status``: every source's status, the destinations by kind and database, and the
   version. No URL, token or other credential appears in it.
+- ``POST /api/sources/{name}/files``: hand a file to a source that imports files from a folder
+  (``accepts_files`` in its status), as the request body, with its name in ``X-Filename``. It is
+  saved in the source's inbox, under the upload time and that name, and the source is woken to
+  import it. The header is required, so a browser on another site cannot post one without a
+  CORS preflight, which this application never allows.
 - ``GET /``: the status page, which renders ``/api/status`` and refreshes itself, and its icon at
   ``/favicon.svg``.
 """
@@ -17,18 +22,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from importlib import resources
+from pathlib import Path
 from typing import Any
 
 import httpx2
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from jigkit.web import install_security_headers
 
 from ingest_hub import __version__
 from ingest_hub.alerts import Sender
+from ingest_hub.collect import AcceptsFiles
 from ingest_hub.config import load_config
 from ingest_hub.hub import Assembly, assemble
 from ingest_hub.settings import Settings
@@ -37,6 +45,11 @@ from ingest_hub.settings import Settings
 ONLY_ENV = "INGEST_HUB_ONLY"
 #: The status is stale when the runtime has not refreshed it for this long.
 STALE_SECONDS = 180.0
+
+#: The largest file a source is handed through the web interface.
+UPLOAD_MAX_BYTES = 64 * 1024 * 1024
+#: Characters an uploaded file's saved name may keep; others become ``-``.
+UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 #: The page's own policy: its script and styles are inline, and it only fetches from itself.
 PAGE_POLICY = (
@@ -58,8 +71,40 @@ def status_document(assembly: Assembly, revision: str | None) -> dict[str, Any]:
             name: {"kind": d.kind, "database": d.database}
             for name, d in assembly.config.destinations.items()
         },
-        "sources": snapshot["sources"],
+        "sources": [
+            {**source, "accepts_files": _accepts(assembly.runtime.source(source["name"]))}
+            for source in snapshot["sources"]
+        ],
     }
+
+
+def _accepts(source: object) -> list[str] | None:
+    """The name endings of the files a source can be handed, or None when it takes none."""
+    return list(source.file_suffixes) if isinstance(source, AcceptsFiles) else None
+
+
+def saved_name(filename: str, suffixes: tuple[str, ...], moment: float) -> str | None:
+    """The name an upload is saved under in an inbox: the upload time (UTC) and the file's own
+    name reduced to safe characters, or None when the name has none of the accepted endings."""
+    name = UNSAFE_NAME.sub("-", Path(filename.replace("\\", "/")).name).strip(".-")
+    if not name.lower().endswith(tuple(s.lower() for s in suffixes)):
+        return None
+    return time.strftime("%Y%m%dT%H%M%SZ-", time.gmtime(moment)) + name
+
+
+def _write(inbox: Path, name: str, body: bytes) -> str:
+    """Write a file into an inbox without a reader ever seeing it half-written, keeping any file
+    already there under that name; returns the name it was saved under."""
+    inbox.mkdir(parents=True, exist_ok=True)
+    stem, dot, suffix = name.rpartition(".")
+    target, n = inbox / name, 1
+    while target.exists():
+        n += 1
+        target = inbox / f"{stem}-{n}{dot}{suffix}"
+    partial = inbox / f".{target.name}.part"
+    partial.write_bytes(body)
+    os.replace(partial, target)
+    return target.name
 
 
 def build_app(
@@ -122,6 +167,32 @@ def build_app(
         if "assembly" not in state:
             return JSONResponse({"status": "starting"}, 503)
         return JSONResponse(status_document(state["assembly"], settings.revision))
+
+    @app.post("/api/sources/{name}/files")
+    async def upload(name: str, request: Request) -> JSONResponse:
+        """Save the request body in a source's inbox and wake the source to import it."""
+        assembly: Assembly | None = state.get("assembly")
+        source = assembly.runtime.source(name) if assembly else None
+        if not isinstance(source, AcceptsFiles):
+            return JSONResponse({"error": f"{name} does not take files"}, 404)
+        filename = request.headers.get("x-filename", "")
+        if not filename:
+            return JSONResponse({"error": "the X-Filename header is required"}, 400)
+        target = saved_name(filename, source.file_suffixes, clock())
+        if target is None:
+            wanted = ", ".join(source.file_suffixes)
+            return JSONResponse({"error": f"{name} takes {wanted} files"}, 415)
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > UPLOAD_MAX_BYTES:
+                limit = UPLOAD_MAX_BYTES // (1024 * 1024)
+                return JSONResponse({"error": f"files are limited to {limit} MiB"}, 413)
+        if not body:
+            return JSONResponse({"error": "the file is empty"}, 400)
+        saved = await asyncio.to_thread(_write, source.inbox, target, bytes(body))
+        source.wake()
+        return JSONResponse({"saved": saved, "bytes": len(body)}, 201)
 
     @app.get("/favicon.svg")
     async def favicon() -> Response:

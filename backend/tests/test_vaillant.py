@@ -345,7 +345,9 @@ async def test_a_session_far_from_expiry_is_not_refreshed(tmp_path):
     assert api.refreshed == 0
 
 
-async def test_a_quota_refusal_at_login_is_waited_out_for_as_long_as_vaillant_says(tmp_path):
+async def test_a_quota_refusal_at_login_is_waited_out_for_as_long_as_vaillant_says(
+    tmp_path, caplog
+):
     api = energy_api()
     attempts = []
     quota = Refused(403)
@@ -367,7 +369,9 @@ async def test_a_quota_refusal_at_login_is_waited_out_for_as_long_as_vaillant_sa
     with pytest.raises(SystemExit):
         await harness.source.run(harness.context)
     assert harness.sleeps[0] == 49 + 10
-    assert len(attempts) == 2 and any("pausing 59 s" in p for p in harness.problems)
+    assert len(attempts) == 2 and "pausing 59 s" in caplog.text
+    # The wait ends with the hour, so it is not reported as a problem.
+    assert harness.problems == []
 
 
 async def test_a_403_that_is_not_about_the_quota_ends_the_run(tmp_path):
@@ -405,7 +409,7 @@ async def test_series_are_requested_one_at_a_time_a_moment_apart(tmp_path):
     assert device.data == ["first", "second"]  # the device itself is left as it was
 
 
-async def test_quota_and_server_errors_are_waited_out(tmp_path):
+async def test_quota_and_server_errors_are_waited_out(tmp_path, caplog):
     api = energy_api()
     api.fail_with = [Refused(429)]
     harness = Harness(tmp_path, api)
@@ -413,7 +417,7 @@ async def test_quota_and_server_errors_are_waited_out(tmp_path):
     with pytest.raises(SystemExit):
         await harness.source.run(harness.context)
     assert harness.sleeps[0] == 60 * 60
-    assert any("HTTP 429" in p for p in harness.problems)
+    assert "HTTP 429" in caplog.text and harness.problems == []
 
 
 async def test_other_errors_end_the_run(tmp_path):
@@ -625,6 +629,7 @@ async def test_a_server_error_pauses_without_spending_the_hour(tmp_path):
     harness.stop_after = 2
     with pytest.raises(SystemExit):
         await harness.source.run(harness.context)
+    assert any("HTTP 503" in p for p in harness.problems)
     # After the pause, both polls run within the same hour: energy first, finding the devices
     # itself (charged its guess, 4, with no devices known yet), then state (4). The failed call
     # does not spend the hour.

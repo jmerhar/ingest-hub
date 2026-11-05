@@ -48,15 +48,18 @@ paths; a literal credential in the file is refused.
 
 With `WEB_PORT` set, `ingest-hub run` also serves:
 
-- `/`: a read-only page showing each source's state, last success and error, points and batches
-  written, spool backlog, heartbeat, and how far each of its streams is complete, refreshed every
-  15 s;
+- `/`: a page showing each source's state, last success and error, points and batches written,
+  spool backlog, heartbeat, and how far each of its streams is complete, refreshed every 15 s. A
+  source that imports files from a folder (`vaillant_export`) has an upload button;
 - `/api/status`: the same as JSON;
+- `POST /api/sources/NAME/files`: save the request body in that source's inbox, named by the upload
+  time and the `X-Filename` header (required), and import it at once; at most 64 MiB;
 - `/health`: 200 while the runtime is running and refreshing its status, 503 otherwise. It does
   not depend on any destination, since restarting the process would not bring a database back.
 
-Nothing on it can change anything, and it shows no credentials, but it does show what is being
-collected; publish it only behind a reverse proxy you control.
+It shows no credentials, and the only thing it can change is adding files to an inbox, but it
+does show what is being collected and has no login; publish it only behind a reverse proxy you
+control.
 
 ### Alerts
 
@@ -181,7 +184,9 @@ source counts its own requests against `requests_per_hour` (18), keeping the cou
 directory across restarts: a poll that would not fit in what is left of the hour waits for the
 next one, and a due energy poll holds state polls back until it has run. A refusal (429, or 403
 naming the quota) or a server error, at login or later, is waited out for as long as Vaillant
-says, at most `pause_minutes` (60), and a refusal counts the hour as spent; bucket series are
+says, at most `pause_minutes` (60). A quota refusal counts the hour as spent and is logged, not
+reported as a problem, since another client of the same account can spend the quota first; a
+refusal that persists shows as writes and progress that stop. Bucket series are
 requested one at a time, a couple of seconds apart, and the first energy poll starts a minute
 after the first state poll.
 
@@ -190,9 +195,11 @@ after the first state poll.
 `kind = "vaillant_export"` imports the data exports a myVAILLANT user can download under the EU
 Data Act (from Vaillant's portal at eu-data-act.vaillant-group.com). An export is a JSON array of
 messages and holds far more than the app's API: the controller's state every few minutes, power
-every minute or two, the heat pump's eBUS readings every few minutes, and hourly running totals. Drop export files into `inbox`; every
-`scan_minutes` (10) the source imports each `*.json` file there and moves it to `imported/`, or to
-`failed/` when it cannot be read. Importing overlapping exports writes the same points again.
+every minute or two, the heat pump's eBUS readings every few minutes, and hourly running
+totals. Upload an export on the status page, or drop it into `inbox`; the source imports each
+`*.json` file there at once when uploaded, otherwise every `scan_minutes` (10), and moves it to
+`imported/`, or to `failed/` when it cannot be read. Importing overlapping exports writes the same
+points again.
 
 | Table | From | Tags | Fields |
 |---|---|---|---|

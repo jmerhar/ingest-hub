@@ -44,6 +44,11 @@
   .chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 0 8px;
           font-size: 12px; color: var(--muted); }
   #problem { display: none; }
+  .upload { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .upload label { cursor: pointer; border: 1px solid var(--line); border-radius: 6px;
+                  padding: 2px 10px; background: var(--chip); }
+  .upload input { display: none; }
+  .upload .done { color: var(--ok); }
 </style>
 </head>
 <body>
@@ -56,6 +61,9 @@
 <script>
 "use strict";
 const REFRESH_MS = 15000;
+// The outcome of the latest upload per source, kept here because the cards are rebuilt on every
+// refresh.
+const uploads = {};
 
 function el(tag, attrs, ...children) {
   const node = document.createElement(tag);
@@ -89,6 +97,32 @@ function destination(name, dest) {
   return dest.kind ? where + " (" + dest.kind + ")" : where;
 }
 
+async function upload(source, file) {
+  uploads[source] = { text: "uploading " + file.name + "…" };
+  refresh();
+  try {
+    const response = await fetch("api/sources/" + encodeURIComponent(source) + "/files", {
+      method: "POST", body: file, headers: { "X-Filename": file.name },
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || "HTTP " + response.status);
+    uploads[source] = { text: "saved " + body.saved + "; importing now", done: true };
+  } catch (error) {
+    uploads[source] = { text: "upload failed: " + error.message, error: true };
+  }
+  refresh();
+}
+
+function uploader(source) {
+  const input = el("input", { type: "file", accept: source.accepts_files.join(",") });
+  input.addEventListener("change", () => { if (input.files.length) upload(source.name, input.files[0]); });
+  const row = el("div", { class: "upload small" }, el("label", {}, "Upload a file…", input));
+  const latest = uploads[source.name];
+  if (latest) row.append(el("span", { class: latest.error ? "error" : latest.done ? "done" : "muted" },
+                            latest.text));
+  return row;
+}
+
 function card(source, doc) {
   const now = doc.now;
   const dest = doc.destinations[source.destination] || {};
@@ -118,6 +152,7 @@ function card(source, doc) {
     el("h2", {}, el("span", { class: "dot " + level, title: level }), source.name,
        el("span", { class: "chip" }, source.kind)),
     list);
+  if (source.accepts_files) node.append(uploader(source));
   const streams = Object.entries(source.progress || {});
   if (streams.length) {
     streams.sort((a, b) => a[1] - b[1]);
