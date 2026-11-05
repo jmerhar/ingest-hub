@@ -485,3 +485,28 @@ def test_the_controller_state_goes_into_the_live_sources_tables(tmp_path):
         ),
     ]
     assert counts == {"system": 1, "zone": 1, "circuit": 1, "dhw": 1}
+
+
+async def test_device_names_from_one_export_name_the_next(tmp_path):
+    harness = Harness(tmp_path, devices={"heat_pump": "heatpump"})
+    harness.inbox.mkdir()
+    write_export(harness.inbox / "a.json", [TOPOLOGY, POWER])
+    await harness.source.scan(harness.context)
+    saved = json.loads((tmp_path / export.NAMES_FILE).read_text())
+    assert saved == {"0:118": "hp_accessory", "0:8": "heat_pump"}
+    # The next export has no topology, as most do, yet its devices keep their names.
+    write_export(harness.inbox / "b.json", [POWER])
+    await harness.source.scan(harness.context)
+    devices = [dict(p.tags)["device"] for p in harness.batches[-1]]
+    assert devices == ["heatpump", "hp_accessory", "ebus_9"]
+
+
+async def test_unreadable_device_names_fall_back_to_addresses(tmp_path, caplog):
+    harness = Harness(tmp_path)
+    harness.inbox.mkdir()
+    (tmp_path / export.NAMES_FILE).write_text("{not json")
+    write_export(harness.inbox / "a.json", [POWER])
+    await harness.source.scan(harness.context)
+    assert "naming devices by address" in caplog.text
+    assert dict(harness.batches[0][0].tags) == {"device": "ebus_8"}
+    assert not (tmp_path / export.NAMES_FILE).read_text().startswith("{\n")  # left alone

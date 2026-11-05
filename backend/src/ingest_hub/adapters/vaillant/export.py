@@ -29,8 +29,10 @@ The other four are tagged ``device``:
   ``operation_mode`` and ``energy_type``, field ``wh``, the running total as Vaillant reports it.
 
 A device is named by its type in the export's topology (``HEAT_PUMP`` becomes ``heat_pump``), or
-``ebus_<address>`` when the export does not list it; ``devices`` renames either, so the names can
-match another source's. Every scan imports each ``*.json`` file in ``inbox`` and moves it to
+``ebus_<address>`` when no topology has listed it; ``devices`` renames either, so the names can
+match another source's. Vaillant sends the topology when the gateway connects, so most exports do
+not carry it: the names it gives are kept in the source's state directory and used for every
+later export. Every scan imports each ``*.json`` file in ``inbox`` and moves it to
 ``imported/`` beside it once its points are safe, or to ``failed/`` when it cannot be read.
 Importing the same messages again writes the same points, so overlapping exports are harmless.
 No progress is published: exports arrive whenever someone drops one.
@@ -63,6 +65,8 @@ BATCH = 5000
 IMPORTED = "imported"
 FAILED = "failed"
 TOPOLOGY = "hvac-topology"
+#: The device names learnt from topologies, in the source's state directory.
+NAMES_FILE = "vaillant-export-devices.json"
 #: eBUS values that mean "no reading", left out rather than stored.
 NO_VALUE = frozenset({"", "NO_VALUE"})
 TRUE = frozenset({"on", "true"})
@@ -175,11 +179,14 @@ def parse_entry(entry: Any) -> tuple[str, str | None, int, dict[str, Any]] | Non
 class Points:
     """Turns an export's messages into points."""
 
-    def __init__(self, params: VaillantExportParams) -> None:
+    def __init__(
+        self, params: VaillantExportParams, names: dict[tuple[int, int], str] | None = None
+    ) -> None:
         self._prefix = params.table_prefix
         self._renames = params.devices
-        #: Device names by (bus coupler address, eBUS address), from the export's topology.
-        self._names: dict[tuple[int, int], str] = {}
+        #: Device names by (bus coupler address, eBUS address), from topologies; a topology in
+        #: the export adds to them in place.
+        self._names = {} if names is None else names
         self.counts: Counter[str] = Counter()
 
     def learn_topology(self, message: dict[str, Any]) -> None:
@@ -302,10 +309,16 @@ class Points:
             yield self._point("energy_total", tags, ms, {"wh": float(value)})
 
 
-def export_points(path: Path, params: VaillantExportParams) -> tuple[list[Point], Counter[str]]:
-    """Every point an export file carries, and how many went to each table."""
+def export_points(
+    path: Path, params: VaillantExportParams, names: dict[tuple[int, int], str] | None = None
+) -> tuple[list[Point], Counter[str]]:
+    """Every point an export file carries, and how many went to each table.
+
+    ``names`` are device names already learnt, by address; any the export's topology gives are
+    added to it in place.
+    """
     entries = read_entries(path)
-    builder = Points(params)
+    builder = Points(params, names)
     # Devices are named from the topology before any message is turned into points, wherever in
     # the file it comes. Messages are parsed one at a time, so an export of many days needs
     # little more memory than its text.
@@ -364,9 +377,12 @@ class VaillantExportSource:
     async def scan(self, context: SourceContext) -> None:
         """Import every export waiting in the inbox, oldest name first."""
         inbox = self._params.inbox
+        names_path = context.state_dir / NAMES_FILE
         for path in sorted(inbox.glob("*.json")):
+            names = _load_names(names_path)
+            known = dict(names)
             try:
-                points, counts = export_points(path, self._params)
+                points, counts = export_points(path, self._params, names)
             except ExportError as error:
                 context.problem(f"cannot read export {error}; moved to {FAILED}/")
                 logger.error("cannot read export %s; moving it to %s/", error, FAILED)
@@ -378,9 +394,36 @@ class VaillantExportSource:
                         f"{path.name}: a batch was refused; the file stays in the inbox"
                     )
                     return
+            if names != known:
+                _save_names(names_path, names)
             _move(path, IMPORTED)
             summary = ", ".join(f"{n} {table}" for table, n in sorted(counts.items())) or "nothing"
             logger.info("imported %s: %s", path.name, summary)
+
+
+def _load_names(path: Path) -> dict[tuple[int, int], str]:
+    """The device names learnt from earlier topologies, or none when they cannot be read."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        names = {}
+        for key, name in data.items():
+            coupler, address = key.split(":")
+            names[(int(coupler), int(address))] = str(name)
+        return names
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, AttributeError) as error:
+        logger.error("cannot read %s (%s); naming devices by address", path, error)
+        return {}
+
+
+def _save_names(path: Path, names: dict[tuple[int, int], str]) -> None:
+    """Keep the device names for later exports, written atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    data = {f"{coupler}:{address}": name for (coupler, address), name in sorted(names.items())}
+    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _move(path: Path, folder: str) -> None:

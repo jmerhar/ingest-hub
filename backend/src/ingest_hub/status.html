@@ -106,7 +106,10 @@ async function upload(source, file) {
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || "HTTP " + response.status);
-    uploads[source] = { text: "saved " + body.saved + "; importing now", done: true };
+    uploads[source] = { saved: body.saved, at: body.at };
+    // The import takes a moment; look again soon rather than at the next regular refresh.
+    setTimeout(refresh, 1500);
+    setTimeout(refresh, 5000);
   } catch (error) {
     uploads[source] = { text: "upload failed: " + error.message, error: true };
   }
@@ -118,8 +121,22 @@ function uploader(source) {
   input.addEventListener("change", () => { if (input.files.length) upload(source.name, input.files[0]); });
   const row = el("div", { class: "upload small" }, el("label", {}, "Upload a file…", input));
   const latest = uploads[source.name];
-  if (latest) row.append(el("span", { class: latest.error ? "error" : latest.done ? "done" : "muted" },
-                            latest.text));
+  if (latest) {
+    let text = latest.text, kind = latest.error ? "error" : "muted";
+    if (latest.saved) {
+      // The server's clock decides, so a browser whose clock is off does not matter.
+      if (source.last_error_at != null && source.last_error_at >= latest.at) {
+        text = "could not import " + latest.saved + "; see the last error";
+        kind = "error";
+      } else if (source.last_success != null && source.last_success >= latest.at) {
+        text = "imported " + latest.saved;
+        kind = "done";
+      } else {
+        text = "saved " + latest.saved + "; importing…";
+      }
+    }
+    row.append(el("span", { class: kind }, text));
+  }
   return row;
 }
 

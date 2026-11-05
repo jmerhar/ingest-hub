@@ -191,6 +191,7 @@ inbox = "{inbox}"
             assert saved.status_code == 201
             name = saved.json()["saved"]
             assert name.endswith("Z-my-export.json") and saved.json()["bytes"] == len(body)
+            assert isinstance(saved.json()["at"], float)
             # Woken by the upload, the source imports it long before its next scan.
             async with asyncio.timeout(10):
                 while not (inbox / "imported" / name).exists():

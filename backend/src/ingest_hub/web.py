@@ -11,8 +11,9 @@ The application's lifespan runs the sources and alerts, so one process both coll
 - ``POST /api/sources/{name}/files``: hand a file to a source that imports files from a folder
   (``accepts_files`` in its status), as the request body, with its name in ``X-Filename``. It is
   saved in the source's inbox, under the upload time and that name, and the source is woken to
-  import it. The header is required, so a browser on another site cannot post one without a
-  CORS preflight, which this application never allows.
+  import it; the answer gives the saved name and the server's time (``at``), which the source's
+  next ``last_success`` or ``last_error_at`` follows. The header is required, so a browser on
+  another site cannot post one without a CORS preflight, which this application never allows.
 - ``GET /``: the status page, which renders ``/api/status`` and refreshes itself, and its icon at
   ``/favicon.svg``.
 """
@@ -194,7 +195,7 @@ def build_app(
             return JSONResponse({"error": "the file is empty"}, 400)
         saved = await asyncio.to_thread(_write, source.inbox, target, bytes(body))
         source.wake()
-        return JSONResponse({"saved": saved, "bytes": len(body)}, 201)
+        return JSONResponse({"saved": saved, "bytes": len(body), "at": clock()}, 201)
 
     @app.get("/favicon.svg")
     async def favicon() -> Response:
