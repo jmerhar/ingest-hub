@@ -180,6 +180,11 @@ class Budget:
         self._roll(now)
         return self.spent == 0 or self.spent + cost <= self.allowance
 
+    def used(self, now: float) -> int:
+        """Requests counted in this hour so far."""
+        self._roll(now)
+        return self.spent
+
     def charge(self, now: float, requests: int) -> None:
         """Count requests made in this hour."""
         self._roll(now)
@@ -334,16 +339,17 @@ class VaillantSource:
     async def _pause(self, context: SourceContext, error: BaseException, budget: Budget) -> None:
         """Wait out a quota or server error: as long as Vaillant says, or ``pause_minutes``.
 
-        A quota refusal is logged but not reported as a problem: something else using the same
-        account can spend the quota first, and the wait ends with the hour. A refusal that keeps
+        A quota refusal is logged, with the requests counted this hour and Vaillant's own words,
+        but not reported as a problem, since the wait ends with the hour; a refusal that keeps
         coming still shows, as writes and progress that stop. A server error is reported.
         """
         status = _http_status(error)
         seconds = _pause_seconds(error, self._params.pause_minutes * 60)
         message = f"Vaillant answered HTTP {status}; pausing {seconds:.0f} s"
         if status in {403, 429}:
+            counted = budget.used(context.clock())
+            message += f" after {counted} request(s) counted this hour: {str(error)[:300]}"
             budget.exhaust(context.clock())
-            message += " (the quota was spent before the source's own budget)"
         else:
             context.problem(message)
         logger.warning(message)

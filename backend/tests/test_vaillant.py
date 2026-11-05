@@ -370,6 +370,10 @@ async def test_a_quota_refusal_at_login_is_waited_out_for_as_long_as_vaillant_sa
         await harness.source.run(harness.context)
     assert harness.sleeps[0] == 49 + 10
     assert len(attempts) == 2 and "pausing 59 s" in caplog.text
+    assert (
+        "after 0 request(s) counted this hour" in caplog.text
+        and "Out of call volume" in caplog.text
+    )
     # The wait ends with the hour, so it is not reported as a problem.
     assert harness.problems == []
 

@@ -184,9 +184,9 @@ source counts its own requests against `requests_per_hour` (18), keeping the cou
 directory across restarts: a poll that would not fit in what is left of the hour waits for the
 next one, and a due energy poll holds state polls back until it has run. A refusal (429, or 403
 naming the quota) or a server error, at login or later, is waited out for as long as Vaillant
-says, at most `pause_minutes` (60). A quota refusal counts the hour as spent and is logged, not
-reported as a problem, since another client of the same account can spend the quota first; a
-refusal that persists shows as writes and progress that stop. Bucket series are
+says, at most `pause_minutes` (60). A quota refusal counts the hour as spent and is logged, with the
+requests counted that hour and Vaillant's message, but not reported as a problem, since the wait
+ends with the hour; a refusal that persists shows as writes and progress that stop. Bucket series are
 requested one at a time, a couple of seconds apart, and the first energy poll starts a minute
 after the first state poll.
 
