@@ -133,3 +133,14 @@ destination = "home"
 host = "192.0.2.30"
 map = "hoymiles-dtu"
 interval_seconds = 60
+
+# A Zaptec charger, through a bridge that holds the Zaptec login (see the README).
+[sources.charger]
+kind = "zaptec"
+destination = "home"
+
+[sources.charger.params]
+bridge_url = "http://zaptec-bridge:8080"
+# state_seconds = 60
+# sessions_minutes = 20
+# history_days = 365
