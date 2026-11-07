@@ -9,7 +9,7 @@ from typing import Any
 import httpx2
 from pydantic import BaseModel
 
-from ingest_hub.adapters import frank, modbus, mqtt, tuya, vaillant, zaptec
+from ingest_hub.adapters import alphaess_cloud, frank, modbus, mqtt, tuya, vaillant, zaptec
 from ingest_hub.adapters.vaillant import export as vaillant_export
 from ingest_hub.collect import Source
 
@@ -24,6 +24,7 @@ class Adapter:
 
 
 ADAPTERS: dict[str, Adapter] = {
+    "alphaess_cloud": Adapter(alphaess_cloud.AlphaCloudParams, alphaess_cloud.build),
     "frank": Adapter(frank.FrankParams, frank.build),
     "modbus": Adapter(modbus.ModbusParams, modbus.build),
     "mqtt": Adapter(mqtt.MqttParams, mqtt.build),

@@ -144,3 +144,13 @@ bridge_url = "http://zaptec-bridge:8080"
 # state_seconds = 60
 # sessions_minutes = 20
 # history_days = 365
+
+# The same AlphaESS system through AlphaESS's cloud: its history and daily totals.
+[sources.battery_cloud]
+kind = "alphaess_cloud"
+destination = "home"
+
+[sources.battery_cloud.params]
+app_id_file = "/run/secrets/alphaess_app_id"
+app_secret_file = "/run/secrets/alphaess_app_secret"
+timezone = "Europe/Amsterdam"
