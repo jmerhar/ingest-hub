@@ -3,6 +3,8 @@
 # Holding registers, from AlphaESS's register parameter list as decoded by the Alpha2MQTT project
 # (github.com/dxoverdy/Alpha2MQTT), whose scales follow readings from a real system. Types and
 # scales can differ between models and firmware versions; check new readings for plausibility.
+# The grid and PV meter voltages (1 V), cell voltages (1 mV) and dispatch powers (offset
+# 32000) follow a system with a high-voltage battery, checked against its other readings.
 #
 # Tables: grid (the grid meter), pv_meter (a meter on a separate PV inverter, when fitted),
 # battery, inverter (the hybrid inverter, its PV strings and backup output), system (totals and
@@ -60,7 +62,6 @@ table = "grid"
 name = "voltage_of_a_phase"
 address = 0x0014
 type = "u16"
-scale = 0.1
 unit = "V"
 
 [[registers]]
@@ -68,7 +69,6 @@ table = "grid"
 name = "voltage_of_b_phase"
 address = 0x0015
 type = "u16"
-scale = 0.1
 unit = "V"
 
 [[registers]]
@@ -76,7 +76,6 @@ table = "grid"
 name = "voltage_of_c_phase"
 address = 0x0016
 type = "u16"
-scale = 0.1
 unit = "V"
 
 [[registers]]
@@ -256,7 +255,6 @@ table = "pv_meter"
 name = "voltage_of_a_phase"
 address = 0x0094
 type = "u16"
-scale = 0.1
 unit = "V"
 
 [[registers]]
@@ -264,7 +262,6 @@ table = "pv_meter"
 name = "voltage_of_b_phase"
 address = 0x0095
 type = "u16"
-scale = 0.1
 unit = "V"
 
 [[registers]]
@@ -272,7 +269,6 @@ table = "pv_meter"
 name = "voltage_of_c_phase"
 address = 0x0096
 type = "u16"
-scale = 0.1
 unit = "V"
 
 [[registers]]
@@ -472,7 +468,7 @@ table = "battery"
 name = "min_cell_voltage"
 address = 0x0107
 type = "u16"
-scale = 0.01
+scale = 0.001
 unit = "V"
 
 [[registers]]
@@ -492,7 +488,7 @@ table = "battery"
 name = "max_cell_voltage"
 address = 0x010a
 type = "u16"
-scale = 0.01
+scale = 0.001
 unit = "V"
 
 [[registers]]
@@ -1372,6 +1368,7 @@ name = "active_power"
 address = 0x0881
 type = "s32"
 unit = "W"
+offset = 32000
 
 [[registers]]
 table = "dispatch"
@@ -1379,6 +1376,7 @@ name = "reactive_power"
 address = 0x0883
 type = "s32"
 unit = "var"
+offset = 32000
 
 [[registers]]
 table = "dispatch"
