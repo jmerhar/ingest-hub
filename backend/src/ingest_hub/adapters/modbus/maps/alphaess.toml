@@ -1,0 +1,1443 @@
+# AlphaESS hybrid inverters and batteries (Storion SMILE, Hi) over Modbus TCP or RTU (unit 85).
+#
+# Holding registers, from AlphaESS's register parameter list as decoded by the Alpha2MQTT project
+# (github.com/dxoverdy/Alpha2MQTT), whose scales follow readings from a real system. Types and
+# scales can differ between models and firmware versions; check new readings for plausibility.
+#
+# Tables: grid (the grid meter), pv_meter (a meter on a separate PV inverter, when fitted),
+# battery, inverter (the hybrid inverter, its PV strings and backup output), system (totals and
+# faults), timing and dispatch (the battery's charge and discharge control, which a controller
+# such as evcc may set), and the slow-changing inverter_info, system_info and system_config.
+#
+# Built from Alpha2MQTT's Definitions.h and RegisterHandler.cpp; write-only registers are
+# left out.
+
+description = "AlphaESS hybrid inverter and battery"
+table_prefix = "alphaess_"
+function = 3
+max_read = 100
+max_gap = 8
+
+[tables.inverter_info]
+every_seconds = 3600
+
+[tables.system_info]
+every_seconds = 3600
+
+[tables.system_config]
+every_seconds = 3600
+
+[[registers]]
+table = "grid"
+name = "ct_enable"
+address = 0x0000
+type = "u16"
+
+[[registers]]
+table = "grid"
+name = "ct_rate"
+address = 0x0001
+type = "u16"
+
+[[registers]]
+table = "grid"
+name = "total_energy_feed_to_grid"
+address = 0x0010
+type = "u32"
+scale = 0.01
+unit = "kWh"
+
+[[registers]]
+table = "grid"
+name = "total_energy_consumed_from_grid"
+address = 0x0012
+type = "u32"
+scale = 0.01
+unit = "kWh"
+
+[[registers]]
+table = "grid"
+name = "voltage_of_a_phase"
+address = 0x0014
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "grid"
+name = "voltage_of_b_phase"
+address = 0x0015
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "grid"
+name = "voltage_of_c_phase"
+address = 0x0016
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "grid"
+name = "current_of_a_phase"
+address = 0x0017
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "grid"
+name = "current_of_b_phase"
+address = 0x0018
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "grid"
+name = "current_of_c_phase"
+address = 0x0019
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "grid"
+name = "frequency"
+address = 0x001a
+type = "u16"
+scale = 0.01
+unit = "Hz"
+
+[[registers]]
+table = "grid"
+name = "active_power_of_a_phase"
+address = 0x001b
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "grid"
+name = "active_power_of_b_phase"
+address = 0x001d
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "grid"
+name = "active_power_of_c_phase"
+address = 0x001f
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "grid"
+name = "total_active_power"
+address = 0x0021
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "grid"
+name = "reactive_power_of_a_phase"
+address = 0x0023
+type = "s32"
+unit = "var"
+
+[[registers]]
+table = "grid"
+name = "reactive_power_of_b_phase"
+address = 0x0025
+type = "s32"
+unit = "var"
+
+[[registers]]
+table = "grid"
+name = "reactive_power_of_c_phase"
+address = 0x0027
+type = "s32"
+unit = "var"
+
+[[registers]]
+table = "grid"
+name = "total_reactive_power"
+address = 0x0029
+type = "s32"
+unit = "var"
+
+[[registers]]
+table = "grid"
+name = "apparent_power_of_a_phase"
+address = 0x002b
+type = "s32"
+unit = "VA"
+
+[[registers]]
+table = "grid"
+name = "apparent_power_of_b_phase"
+address = 0x002d
+type = "s32"
+unit = "VA"
+
+[[registers]]
+table = "grid"
+name = "apparent_power_of_c_phase"
+address = 0x002f
+type = "s32"
+unit = "VA"
+
+[[registers]]
+table = "grid"
+name = "total_apparent_power"
+address = 0x0031
+type = "s32"
+unit = "VA"
+
+[[registers]]
+table = "grid"
+name = "power_factor_of_a_phase"
+address = 0x0033
+type = "s16"
+scale = 0.01
+
+[[registers]]
+table = "grid"
+name = "power_factor_of_b_phase"
+address = 0x0034
+type = "s16"
+scale = 0.01
+
+[[registers]]
+table = "grid"
+name = "power_factor_of_c_phase"
+address = 0x0035
+type = "s16"
+scale = 0.01
+
+[[registers]]
+table = "grid"
+name = "total_power_factor"
+address = 0x0036
+type = "s16"
+scale = 0.01
+
+[[registers]]
+table = "pv_meter"
+name = "ct_enable"
+address = 0x0080
+type = "u16"
+
+[[registers]]
+table = "pv_meter"
+name = "ct_rate"
+address = 0x0081
+type = "u16"
+
+[[registers]]
+table = "pv_meter"
+name = "total_energy_feed_to_grid"
+address = 0x0090
+type = "u32"
+scale = 0.01
+unit = "kWh"
+
+[[registers]]
+table = "pv_meter"
+name = "total_energy_consumed_from_grid"
+address = 0x0092
+type = "u32"
+scale = 0.01
+unit = "kWh"
+
+[[registers]]
+table = "pv_meter"
+name = "voltage_of_a_phase"
+address = 0x0094
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "pv_meter"
+name = "voltage_of_b_phase"
+address = 0x0095
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "pv_meter"
+name = "voltage_of_c_phase"
+address = 0x0096
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "pv_meter"
+name = "current_of_a_phase"
+address = 0x0097
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "pv_meter"
+name = "current_of_b_phase"
+address = 0x0098
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "pv_meter"
+name = "current_of_c_phase"
+address = 0x0099
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "pv_meter"
+name = "frequency"
+address = 0x009a
+type = "u16"
+scale = 0.01
+unit = "Hz"
+
+[[registers]]
+table = "pv_meter"
+name = "active_power_of_a_phase"
+address = 0x009b
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "pv_meter"
+name = "active_power_of_b_phase"
+address = 0x009d
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "pv_meter"
+name = "active_power_of_c_phase"
+address = 0x009f
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "pv_meter"
+name = "total_active_power"
+address = 0x00a1
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "pv_meter"
+name = "reactive_power_of_a_phase"
+address = 0x00a3
+type = "s32"
+unit = "var"
+
+[[registers]]
+table = "pv_meter"
+name = "reactive_power_of_b_phase"
+address = 0x00a5
+type = "s32"
+unit = "var"
+
+[[registers]]
+table = "pv_meter"
+name = "reactive_power_of_c_phase"
+address = 0x00a7
+type = "s32"
+unit = "var"
+
+[[registers]]
+table = "pv_meter"
+name = "total_reactive_power"
+address = 0x00a9
+type = "s32"
+unit = "var"
+
+[[registers]]
+table = "pv_meter"
+name = "apparent_power_of_a_phase"
+address = 0x00ab
+type = "s32"
+unit = "VA"
+
+[[registers]]
+table = "pv_meter"
+name = "apparent_power_of_b_phase"
+address = 0x00ad
+type = "s32"
+unit = "VA"
+
+[[registers]]
+table = "pv_meter"
+name = "apparent_power_of_c_phase"
+address = 0x00af
+type = "s32"
+unit = "VA"
+
+[[registers]]
+table = "pv_meter"
+name = "total_apparent_power"
+address = 0x00b1
+type = "s32"
+unit = "VA"
+
+[[registers]]
+table = "pv_meter"
+name = "power_factor_of_a_phase"
+address = 0x00b3
+type = "s16"
+scale = 0.01
+
+[[registers]]
+table = "pv_meter"
+name = "power_factor_of_b_phase"
+address = 0x00b4
+type = "s16"
+scale = 0.01
+
+[[registers]]
+table = "pv_meter"
+name = "power_factor_of_c_phase"
+address = 0x00b5
+type = "s16"
+scale = 0.01
+
+[[registers]]
+table = "pv_meter"
+name = "total_power_factor"
+address = 0x00b6
+type = "s16"
+scale = 0.01
+
+[[registers]]
+table = "battery"
+name = "voltage"
+address = 0x0100
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "battery"
+name = "current"
+address = 0x0101
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "battery"
+name = "soc"
+address = 0x0102
+type = "u16"
+scale = 0.1
+unit = "%"
+
+[[registers]]
+table = "battery"
+name = "status"
+address = 0x0103
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "relay_status"
+address = 0x0104
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "pack_id_of_min_cell_voltage"
+address = 0x0105
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "cell_id_of_min_cell_voltage"
+address = 0x0106
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "min_cell_voltage"
+address = 0x0107
+type = "u16"
+scale = 0.01
+unit = "V"
+
+[[registers]]
+table = "battery"
+name = "pack_id_of_max_cell_voltage"
+address = 0x0108
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "cell_id_of_max_cell_voltage"
+address = 0x0109
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "max_cell_voltage"
+address = 0x010a
+type = "u16"
+scale = 0.01
+unit = "V"
+
+[[registers]]
+table = "battery"
+name = "pack_id_of_min_cell_temperature"
+address = 0x010b
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "cell_id_of_min_cell_temperature"
+address = 0x010c
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "min_cell_temperature"
+address = 0x010d
+type = "s16"
+scale = 0.1
+unit = "°C"
+
+[[registers]]
+table = "battery"
+name = "pack_id_of_max_cell_temperature"
+address = 0x010e
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "cell_id_of_max_cell_temperature"
+address = 0x010f
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "max_cell_temperature"
+address = 0x0110
+type = "s16"
+scale = 0.1
+unit = "°C"
+
+[[registers]]
+table = "battery"
+name = "max_charge_current"
+address = 0x0111
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "battery"
+name = "max_discharge_current"
+address = 0x0112
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "battery"
+name = "charge_cut_off_voltage"
+address = 0x0113
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "battery"
+name = "discharge_cut_off_voltage"
+address = 0x0114
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "battery"
+name = "bmu_software_version"
+address = 0x0115
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "lmu_software_version"
+address = 0x0116
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "iso_software_version"
+address = 0x0117
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "battery_number"
+address = 0x0118
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "battery_capacity"
+address = 0x0119
+type = "u16"
+scale = 0.1
+unit = "kWh"
+
+[[registers]]
+table = "battery"
+name = "battery_type"
+address = 0x011a
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "battery_soh"
+address = 0x011b
+type = "u16"
+scale = 0.1
+unit = "%"
+
+[[registers]]
+table = "battery"
+name = "battery_warning"
+address = 0x011c
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_fault"
+address = 0x011e
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_charge_energy"
+address = 0x0120
+type = "u32"
+scale = 0.1
+unit = "kWh"
+
+[[registers]]
+table = "battery"
+name = "battery_discharge_energy"
+address = 0x0122
+type = "u32"
+scale = 0.1
+unit = "kWh"
+
+[[registers]]
+table = "battery"
+name = "battery_energy_charge_from_grid"
+address = 0x0124
+type = "u32"
+scale = 0.1
+unit = "kWh"
+
+[[registers]]
+table = "battery"
+name = "battery_power"
+address = 0x0126
+type = "s16"
+unit = "W"
+
+[[registers]]
+table = "battery"
+name = "battery_remaining_time"
+address = 0x0127
+type = "u16"
+unit = "min"
+
+[[registers]]
+table = "battery"
+name = "battery_implementation_charge_soc"
+address = 0x0128
+type = "u16"
+scale = 0.1
+unit = "%"
+
+[[registers]]
+table = "battery"
+name = "battery_implementation_discharge_soc"
+address = 0x0129
+type = "u16"
+scale = 0.1
+unit = "%"
+
+[[registers]]
+table = "battery"
+name = "battery_remaining_charge_soc"
+address = 0x012a
+type = "u16"
+scale = 0.1
+unit = "%"
+
+[[registers]]
+table = "battery"
+name = "battery_remaining_discharge_soc"
+address = 0x012b
+type = "u16"
+scale = 0.1
+unit = "%"
+
+[[registers]]
+table = "battery"
+name = "battery_max_charge_power"
+address = 0x012c
+type = "u16"
+unit = "W"
+
+[[registers]]
+table = "battery"
+name = "battery_max_discharge_power"
+address = 0x012d
+type = "u16"
+unit = "W"
+
+[[registers]]
+table = "battery"
+name = "battery_mos_control"
+address = 0x012e
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "battery_soc_calibration"
+address = 0x012f
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "battery_single_cut_error_code"
+address = 0x0130
+type = "u16"
+
+[[registers]]
+table = "battery"
+name = "battery_fault_1"
+address = 0x0131
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_fault_2"
+address = 0x0133
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_fault_3"
+address = 0x0135
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_fault_4"
+address = 0x0137
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_fault_5"
+address = 0x0139
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_fault_6"
+address = 0x013b
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_warning_1"
+address = 0x013d
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_warning_2"
+address = 0x013f
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_warning_3"
+address = 0x0141
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_warning_4"
+address = 0x0143
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_warning_5"
+address = 0x0145
+type = "u32"
+
+[[registers]]
+table = "battery"
+name = "battery_warning_6"
+address = 0x0147
+type = "u32"
+
+[[registers]]
+table = "inverter"
+name = "voltage_l1"
+address = 0x0400
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "voltage_l2"
+address = 0x0401
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "voltage_l3"
+address = 0x0402
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "current_l1"
+address = 0x0403
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "current_l2"
+address = 0x0404
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "current_l3"
+address = 0x0405
+type = "s16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "power_l1"
+address = 0x0406
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "power_l2"
+address = 0x0408
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "power_l3"
+address = 0x040a
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "power_total"
+address = 0x040c
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "backup_voltage_l1"
+address = 0x040e
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "backup_voltage_l2"
+address = 0x040f
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "backup_voltage_l3"
+address = 0x0410
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "backup_current_l1"
+address = 0x0411
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "backup_current_l2"
+address = 0x0412
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "backup_current_l3"
+address = 0x0413
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "backup_power_l1"
+address = 0x0414
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "backup_power_l2"
+address = 0x0416
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "backup_power_l3"
+address = 0x0418
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "backup_power_total"
+address = 0x041a
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "frequency"
+address = 0x041c
+type = "u16"
+scale = 0.01
+unit = "Hz"
+
+[[registers]]
+table = "inverter"
+name = "pv1_voltage"
+address = 0x041d
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "pv1_current"
+address = 0x041e
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "pv1_power"
+address = 0x041f
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "pv2_voltage"
+address = 0x0421
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "pv2_current"
+address = 0x0422
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "pv2_power"
+address = 0x0423
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "pv3_voltage"
+address = 0x0425
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "pv3_current"
+address = 0x0426
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "pv3_power"
+address = 0x0427
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "pv4_voltage"
+address = 0x0429
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "pv4_current"
+address = 0x042a
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "pv4_power"
+address = 0x042b
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "pv5_voltage"
+address = 0x042d
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "pv5_current"
+address = 0x042e
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "pv5_power"
+address = 0x042f
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "pv6_voltage"
+address = 0x0431
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[registers]]
+table = "inverter"
+name = "pv6_current"
+address = 0x0432
+type = "u16"
+scale = 0.1
+unit = "A"
+
+[[registers]]
+table = "inverter"
+name = "pv6_power"
+address = 0x0433
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "inverter"
+name = "inverter_temp"
+address = 0x0435
+type = "u16"
+scale = 0.01
+unit = "°C"
+
+[[registers]]
+table = "inverter"
+name = "inverter_warning_1"
+address = 0x0436
+type = "u32"
+
+[[registers]]
+table = "inverter"
+name = "inverter_warning_2"
+address = 0x0438
+type = "u32"
+
+[[registers]]
+table = "inverter"
+name = "inverter_fault_1"
+address = 0x043a
+type = "u32"
+
+[[registers]]
+table = "inverter"
+name = "inverter_fault_2"
+address = 0x043c
+type = "u32"
+
+[[registers]]
+table = "inverter"
+name = "inverter_total_pv_energy"
+address = 0x043e
+type = "u32"
+scale = 0.1
+unit = "kWh"
+
+[[registers]]
+table = "inverter"
+name = "working_mode"
+address = 0x0440
+type = "u16"
+
+[[registers]]
+table = "inverter_info"
+name = "master_software_version"
+address = 0x0640
+type = "str"
+length = 5
+
+[[registers]]
+table = "inverter_info"
+name = "slave_software_version"
+address = 0x0645
+type = "str"
+length = 5
+
+[[registers]]
+table = "inverter_info"
+name = "serial_number"
+address = 0x064a
+type = "str"
+length = 10
+
+[[registers]]
+table = "system_info"
+name = "system_time_year_month"
+address = 0x0740
+type = "u16"
+
+[[registers]]
+table = "system_info"
+name = "system_time_day_hour"
+address = 0x0741
+type = "u16"
+
+[[registers]]
+table = "system_info"
+name = "system_time_minute_second"
+address = 0x0742
+type = "u16"
+
+[[registers]]
+table = "system_info"
+name = "ems_sn_byte_1_2"
+address = 0x0743
+type = "u16"
+
+[[registers]]
+table = "system_info"
+name = "ems_version_high"
+address = 0x074b
+type = "u16"
+
+[[registers]]
+table = "system_info"
+name = "ems_version_middle"
+address = 0x074c
+type = "u16"
+
+[[registers]]
+table = "system_info"
+name = "ems_version_low"
+address = 0x074d
+type = "u16"
+
+[[registers]]
+table = "system_info"
+name = "protocol_version"
+address = 0x074e
+type = "u16"
+
+[[registers]]
+table = "system_config"
+name = "max_feed_into_grid_percent"
+address = 0x0800
+type = "u16"
+
+[[registers]]
+table = "system_config"
+name = "pv_capacity_storage"
+address = 0x0801
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "system_config"
+name = "pv_capacity_of_grid_inverter"
+address = 0x0803
+type = "u32"
+unit = "W"
+
+[[registers]]
+table = "system_config"
+name = "system_mode"
+address = 0x0805
+type = "u16"
+
+[[registers]]
+table = "system_config"
+name = "meter_ct_select"
+address = 0x0806
+type = "u16"
+
+[[registers]]
+table = "system_config"
+name = "battery_ready"
+address = 0x0807
+type = "u16"
+
+[[registers]]
+table = "system_config"
+name = "ip_method"
+address = 0x0808
+type = "u16"
+
+[[registers]]
+table = "system_config"
+name = "local_ip"
+address = 0x0809
+type = "u32"
+
+[[registers]]
+table = "system_config"
+name = "subnet_mask"
+address = 0x080b
+type = "u32"
+
+[[registers]]
+table = "system_config"
+name = "gateway"
+address = 0x080d
+type = "u32"
+
+[[registers]]
+table = "system_config"
+name = "modbus_address"
+address = 0x080f
+type = "u16"
+
+[[registers]]
+table = "system_config"
+name = "modbus_baud_rate"
+address = 0x0810
+type = "u16"
+
+[[registers]]
+table = "timing"
+name = "time_period_control_flag"
+address = 0x084f
+type = "u16"
+
+[[registers]]
+table = "timing"
+name = "ups_reserve_soc"
+address = 0x0850
+type = "u16"
+
+[[registers]]
+table = "timing"
+name = "time_discharge_start_time_1"
+address = 0x0851
+type = "u16"
+unit = "h"
+
+[[registers]]
+table = "timing"
+name = "time_discharge_stop_time_1"
+address = 0x0852
+type = "u16"
+unit = "h"
+
+[[registers]]
+table = "timing"
+name = "time_discharge_start_time_2"
+address = 0x0853
+type = "u16"
+unit = "h"
+
+[[registers]]
+table = "timing"
+name = "time_discharge_stop_time_2"
+address = 0x0854
+type = "u16"
+unit = "h"
+
+[[registers]]
+table = "timing"
+name = "charge_cut_soc"
+address = 0x0855
+type = "u16"
+
+[[registers]]
+table = "timing"
+name = "time_charge_start_time_1"
+address = 0x0856
+type = "u16"
+unit = "h"
+
+[[registers]]
+table = "timing"
+name = "time_charge_stop_time_1"
+address = 0x0857
+type = "u16"
+unit = "h"
+
+[[registers]]
+table = "timing"
+name = "time_charge_start_time_2"
+address = 0x0858
+type = "u16"
+unit = "h"
+
+[[registers]]
+table = "timing"
+name = "time_charge_stop_time_2"
+address = 0x0859
+type = "u16"
+unit = "h"
+
+[[registers]]
+table = "dispatch"
+name = "dispatch_start"
+address = 0x0880
+type = "u16"
+
+[[registers]]
+table = "dispatch"
+name = "active_power"
+address = 0x0881
+type = "s32"
+unit = "W"
+
+[[registers]]
+table = "dispatch"
+name = "reactive_power"
+address = 0x0883
+type = "s32"
+unit = "var"
+
+[[registers]]
+table = "dispatch"
+name = "dispatch_mode"
+address = 0x0885
+type = "u16"
+
+[[registers]]
+table = "dispatch"
+name = "dispatch_soc"
+address = 0x0886
+type = "u16"
+scale = 0.4
+unit = "%"
+
+[[registers]]
+table = "dispatch"
+name = "dispatch_time"
+address = 0x0887
+type = "u32"
+unit = "s"
+
+[[registers]]
+table = "auxiliary"
+name = "ems_di0"
+address = 0x08c0
+type = "u16"
+
+[[registers]]
+table = "auxiliary"
+name = "ems_di1"
+address = 0x08c1
+type = "u16"
+
+[[registers]]
+table = "system"
+name = "pv_inverter_energy"
+address = 0x08d0
+type = "u32"
+scale = 0.01
+unit = "kWh"
+
+[[registers]]
+table = "system"
+name = "system_total_pv_energy"
+address = 0x08d2
+type = "u32"
+scale = 0.01
+unit = "kWh"
+
+[[registers]]
+table = "system"
+name = "system_fault"
+address = 0x08d4
+type = "u32"
+
+[[registers]]
+table = "system_config"
+name = "grid_regulation"
+address = 0x1000
+type = "u16"
+

@@ -1,0 +1,122 @@
+# Hoymiles microinverters through a DTU-Pro or DTU-Pro-S with Modbus TCP enabled (unit 1).
+#
+# The DTU keeps one 40-register slot per inverter port from 0x1000, filled in order; the first
+# slot without a serial number ends the list. Each slot gives the port's DC side, the inverter's
+# grid side, production and status, tagged by the inverter's serial number and the port.
+#
+# PV current is in hundredths of an ampere on HM and HMS inverters; MI inverters (serial numbers
+# starting 10) report tenths, so for those the stored current is a tenth of the real one.
+
+description = "Hoymiles microinverters through a DTU-Pro(-S)"
+table_prefix = "hoymiles_"
+function = 3
+
+[tables.dtu]
+every_seconds = 3600
+
+[[registers]]
+table = "dtu"
+name = "serial"
+address = 0x2000
+type = "hex"
+length = 3
+
+[[repeats]]
+table = "port"
+start = 0x1000
+stride = 40
+length = 20
+max_count = 100
+stop_when_zero = ["serial"]
+
+[[repeats.fields]]
+name = "data_type"
+byte = 0
+type = "u8"
+
+[[repeats.fields]]
+name = "serial"
+byte = 1
+type = "hex"
+length = 6
+tag = true
+
+[[repeats.fields]]
+name = "port"
+byte = 7
+type = "u8"
+tag = true
+
+[[repeats.fields]]
+name = "pv_voltage"
+byte = 8
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[repeats.fields]]
+name = "pv_current"
+byte = 10
+type = "u16"
+scale = 0.01
+unit = "A"
+
+[[repeats.fields]]
+name = "grid_voltage"
+byte = 12
+type = "u16"
+scale = 0.1
+unit = "V"
+
+[[repeats.fields]]
+name = "grid_frequency"
+byte = 14
+type = "u16"
+scale = 0.01
+unit = "Hz"
+
+[[repeats.fields]]
+name = "pv_power"
+byte = 16
+type = "u16"
+scale = 0.1
+unit = "W"
+
+[[repeats.fields]]
+name = "today_production"
+byte = 18
+type = "u16"
+unit = "Wh"
+
+[[repeats.fields]]
+name = "total_production"
+byte = 20
+type = "u32"
+unit = "Wh"
+
+[[repeats.fields]]
+name = "temperature"
+byte = 24
+type = "s16"
+scale = 0.1
+unit = "°C"
+
+[[repeats.fields]]
+name = "operating_status"
+byte = 26
+type = "u16"
+
+[[repeats.fields]]
+name = "alarm_code"
+byte = 28
+type = "u16"
+
+[[repeats.fields]]
+name = "alarm_count"
+byte = 30
+type = "u16"
+
+[[repeats.fields]]
+name = "link_status"
+byte = 32
+type = "u8"

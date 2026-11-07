@@ -109,3 +109,27 @@ inbox = "/data/inbox/vaillant"
 # scan_minutes = 10
 # The vaillant source's device names, so both write to the same series.
 devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
+
+# A hybrid inverter and battery over Modbus TCP, here through a proxy that shares the device's
+# single connection with another controller.
+[sources.battery]
+kind = "modbus"
+destination = "home"
+
+[sources.battery.params]
+host = "modbus-proxy"
+port = 5200
+unit = 85
+map = "alphaess"
+# interval_seconds = 10
+# tags = { site = "home" }
+
+# Microinverters through their gateway.
+[sources.solar]
+kind = "modbus"
+destination = "home"
+
+[sources.solar.params]
+host = "192.0.2.30"
+map = "hoymiles-dtu"
+interval_seconds = 60
