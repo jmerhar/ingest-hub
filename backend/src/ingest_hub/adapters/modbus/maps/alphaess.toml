@@ -3,7 +3,7 @@
 # Holding registers, from AlphaESS's register parameter list as decoded by the Alpha2MQTT project
 # (github.com/dxoverdy/Alpha2MQTT), whose scales follow readings from a real system. Types and
 # scales can differ between models and firmware versions; check new readings for plausibility.
-# The grid and PV meter voltages (1 V), inverter temperature (1 °C), cell voltages (1 mV) and
+# The grid and PV meter voltages (1 V), inverter temperature (0.1 °C), cell voltages (1 mV) and
 # dispatch powers (offset 32000) follow a system with a high-voltage battery, checked against its
 # other readings.
 #
@@ -1099,7 +1099,7 @@ table = "inverter"
 name = "inverter_temp"
 address = 0x0435
 type = "u16"
-as_float = true
+scale = 0.1
 unit = "°C"
 
 [[registers]]

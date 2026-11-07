@@ -501,4 +501,4 @@ def test_as_float_keeps_an_unscaled_number_a_float():
     assert plain.decode([33]) == 33 and isinstance(plain.decode([33]), int)
     assert forced.decode([33]) == 33.0 and isinstance(forced.decode([33]), float)
     temp = next(r for r in load_map("alphaess").registers if r.name == "inverter_temp")
-    assert temp.decode([33]) == 33.0 and isinstance(temp.decode([33]), float)
+    assert temp.decode([330]) == 33.0
