@@ -19,6 +19,7 @@ A map is a TOML file::
     length = 1            # registers, for str and hex
     scale = 0.1
     offset = 0            # value = raw * scale - offset
+    as_float = false      # store an unscaled number as a float rather than an integer
     unit = "%"
 
     [[repeats]]           # the same block for each of several slots
@@ -36,8 +37,9 @@ A map is a TOML file::
     length = 6            # bytes, for hex and str
     tag = true            # a tag on the slot's point rather than a field
 
-A number is an integer when its scale is 1 and its offset 0, else a float, so a field's type is
-fixed by the map and never changes between readings.
+A number is an integer when its scale is 1 and its offset 0 and the map does not set
+``as_float``, else a float, so a field's type is fixed by the map and never changes between
+readings; ``as_float`` keeps a field a float when its scale becomes 1.
 """
 
 from __future__ import annotations
@@ -71,11 +73,13 @@ class _Value(BaseModel):
     name: str = Field(pattern=NAME)
     scale: float = 1.0
     offset: float = 0.0
+    as_float: bool = False
     unit: str = ""
 
     def number(self, raw: int) -> FieldValue:
-        """A decoded integer, scaled; an integer when the map does not scale it."""
-        if self.scale == 1 and self.offset == 0:
+        """A decoded integer, scaled; an integer when the map neither scales it nor asks for a
+        float."""
+        if self.scale == 1 and self.offset == 0 and not self.as_float:
             return raw
         # Rounded, so 393 at 0.1 is 39.3 rather than 39.300000000000004.
         return round(raw * self.scale - self.offset, 9)

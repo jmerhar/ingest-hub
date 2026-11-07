@@ -493,3 +493,12 @@ async def test_a_full_repeated_block_stops_at_its_count_and_slots_without_fields
     # which comes before the table is due again.
     assert [len(b) for b in harness.batches] == [1]
     assert device.requests == [(3, 100, 4), (3, 110, 4)]
+
+
+def test_as_float_keeps_an_unscaled_number_a_float():
+    plain = Register(table="t", name="a", address=0)
+    forced = Register(table="t", name="b", address=0, as_float=True)
+    assert plain.decode([33]) == 33 and isinstance(plain.decode([33]), int)
+    assert forced.decode([33]) == 33.0 and isinstance(forced.decode([33]), float)
+    temp = next(r for r in load_map("alphaess").registers if r.name == "inverter_temp")
+    assert temp.decode([33]) == 33.0 and isinstance(temp.decode([33]), float)
