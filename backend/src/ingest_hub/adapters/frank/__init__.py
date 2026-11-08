@@ -47,6 +47,8 @@ QUERY = (
     "allInPrice}}}"
 )
 TIMEOUT_SECONDS = 30.0
+#: Seconds between account rounds while history is still being read.
+BACKFILL_PAUSE = 60.0
 #: The message Frank answers with for a day it has no prices for (yet).
 NOT_PUBLISHED = "No marketprices found"
 
@@ -109,11 +111,13 @@ class FrankSource:
         self._params = params
         self._client = client
         self._account = account
+        #: When each kind of round is next due.
+        self._due: dict[str, float] = {}
 
     async def run(self, context: SourceContext) -> None:
         """Poll the prices every ``poll_hours`` and the account every ``account_minutes``, for
         ever, reporting a failed round rather than raising it."""
-        due = {"prices": context.clock(), "account": context.clock()}
+        due = self._due = {"prices": context.clock(), "account": context.clock()}
         if self._account is None:
             due.pop("account")
         every = {
@@ -137,7 +141,9 @@ class FrankSource:
                 await self.poll(context)
             else:
                 assert self._account is not None
-                await self._account.poll(context)
+                if await self._account.poll(context):
+                    # History remains: the next round soon, rather than in account_minutes.
+                    self._due["account"] = context.clock() + BACKFILL_PAUSE
         except (
             FrankError,
             FrankAccountError,

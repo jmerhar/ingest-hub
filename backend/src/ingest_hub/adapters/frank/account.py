@@ -10,7 +10,10 @@ writes, with ``table_prefix`` (``frank_``) before each table:
 - ``usage``: what Frank bills per hour, tagged ``carrier`` (``electricity``, ``gas``, ``feed_in``):
   ``usage`` (kWh or m³) and ``costs`` (EUR). Frank has a day's figures a day or two late and can
   report a day before every hour is in, so a day counts as complete only once each carrier that
-  has hours has all of them; the stream ``usage`` in ``ingest_progress`` says how far they are.
+  has hours has all of them, and is read again until it is; one still incomplete after
+  ``GIVE_UP_DAYS`` is taken as it is (reported when it has some hours, silently when it has none,
+  as before the meter's first readings). The stream ``usage`` in ``ingest_progress`` says how far
+  usage is complete.
 - ``battery``: each smart-trading battery's state, tagged ``battery``: ``soc``, ``total_result``
   (EUR), ``status``, ``mode``, ``strategy`` and ``algorithm``.
 - ``battery_day``: each day's trading, tagged ``battery``, at the day's start: ``result`` and
@@ -27,8 +30,10 @@ writes, with ``table_prefix`` (``frank_``) before each table:
 
 Days are the site's, in ``timezone``. The first time, prices and usage are read from
 ``history_days`` back (not before the site's delivery start), battery and heating days from the
-device's creation. After that each kind of data is read from its last complete day; a day is
-read again until it is complete, so writing a day again writes the same points.
+device's creation, at most ``ROUND_DAYS`` of prices and of usage per round; while history
+remains, the source runs the next round a minute later. After that each kind of data is read from
+its last complete day; a day is read again until it is complete, so writing a day again writes
+the same points.
 """
 
 from __future__ import annotations
@@ -56,6 +61,8 @@ TIMEOUT = 30.0
 GIVE_UP_DAYS = 30
 #: Days after which a battery or heating day counts as final whatever its status says.
 SETTLED_DAYS = 3
+#: Days of history each round reads at most per kind, so a long backfill is spread over rounds.
+ROUND_DAYS = 31
 
 LOGIN = (
     "mutation Login($email: String!, $password: String!) { "
@@ -184,8 +191,9 @@ class FrankAccount:
         raise AssertionError("unreachable")  # pragma: no cover
 
     # ------------------------------------------------------------------ the poll
-    async def poll(self, context: SourceContext) -> None:
-        """Read everything the login gives, writing each kind as it comes."""
+    async def poll(self, context: SourceContext) -> bool:
+        """Read everything the login gives, writing each kind as it comes; True when history
+        remains for another round."""
         path = context.state_dir / STATE_FILE
         state = _load(path)
         today = dt.datetime.fromtimestamp(context.clock(), self._zone).date()
@@ -194,13 +202,14 @@ class FrankAccount:
             today - dt.timedelta(days=self._history_days),
             _date(site.get("deliveryStartDate")) or dt.date.min,
         )
-        await self._prices(context, state, path, site["reference"], start, today)
-        await self._usage(context, state, path, site, start, today)
+        more = await self._prices(context, state, path, site["reference"], start, today)
+        more = await self._usage(context, state, path, site, start, today) or more
         await self._month(context, site["reference"])
         for battery in (await self.query(context, BATTERIES)).get("smartBatteries") or []:
             await self._battery(context, state, path, battery, today)
         for device in (await self.query(context, HEATERS)).get("smartHvacs") or []:
             await self._heater(context, state, path, device, today)
+        return more
 
     async def _site_info(self, context: SourceContext) -> dict[str, Any]:
         sites = (await self.query(context, SITES)).get("userSites") or []
@@ -230,9 +239,14 @@ class FrankAccount:
 
     # ------------------------------------------------------------------ prices
     async def _prices(self, context, state, path, site: str, start: dt.date, today: dt.date):
-        """The contract's prices from the day after the last final one up to tomorrow."""
+        """The contract's prices from the day after the last final one up to tomorrow; True when
+        the round's share of history ran out first."""
         day = _next(state.get("prices")) or start
+        read = 0
         while day <= today + dt.timedelta(days=1):
+            if read >= ROUND_DAYS and day < today:
+                return True
+            read += 1
             data = await self.query(context, PRICES, date=day.isoformat(), site=site)
             prices = data.get("customerMarketPrices") or {}
             points = [
@@ -245,6 +259,7 @@ class FrankAccount:
                 state["prices"] = day.isoformat()
                 _save(path, state)
             day += dt.timedelta(days=1)
+        return False
 
     def _price_point(self, carrier: str, row: dict[str, Any]) -> Point:
         spot, tax = float(row["marketPrice"]), float(row["marketPriceTax"])
@@ -267,17 +282,26 @@ class FrankAccount:
 
     # ------------------------------------------------------------------ usage
     async def _usage(self, context, state, path, site, start: dt.date, today: dt.date):
-        """Billed usage per hour, up to the site's last meter reading."""
+        """Billed usage per hour, up to the site's last meter reading; True when the round's
+        share of history ran out first."""
         last = min(_date(site.get("lastMeterReadingDate")) or today, today - dt.timedelta(days=1))
         complete = _date(state.get("usage"))
+        # The furthest day read so far: days up to it are only incomplete ones read again, and
+        # only days after it count against the round's share of history.
+        frontier = _date(state.get("usage_read")) or complete
         day = _next(state.get("usage")) or start
         prefix_open = True
+        read = 0
         while day <= last:
+            fresh = frontier is None or day > frontier
+            if fresh and read >= ROUND_DAYS:
+                return True
+            read += fresh
             data = await self.query(context, USAGE, date=day.isoformat(), site=site["reference"])
             usage = data.get("periodUsageAndCosts") or {}
             points, whole = self._usage_points(usage, day)
             stale = (today - day).days > GIVE_UP_DAYS
-            if not whole and stale:
+            if not whole and stale and points:
                 context.problem(f"usage for {day} is still incomplete; taking it as it is")
             if prefix_open and (whole or stale):
                 complete = day
@@ -288,9 +312,13 @@ class FrankAccount:
                 state["usage"] = complete.isoformat()
                 until = self._midnight(complete + dt.timedelta(days=1)) * 1000
                 progress = [Progress("usage", until)]
+            if fresh:
+                frontier = day
+                state["usage_read"] = day.isoformat()
             await self._emit(context, points, progress)
             _save(path, state)
             day += dt.timedelta(days=1)
+        return False
 
     def _usage_points(self, usage: dict[str, Any], day: dt.date) -> tuple[list[Point], bool]:
         """A day's hourly points, and whether every carrier with hours has all of them."""

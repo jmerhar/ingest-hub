@@ -171,7 +171,9 @@ every `account_minutes` (60), into tables named with `table_prefix` (`frank_`):
 | `frank_month` | `site` | the month's actual and expected costs so far |
 
 Days are counted in `timezone` (`Europe/Amsterdam`). The first time, prices and usage are read
-from `history_days` (60) back, battery and heating days from the device's creation. Frank has a
+from `history_days` (60) back (not before the site's delivery start), battery and heating days
+from the device's creation; each round reads at most a month of each, and while history remains
+the next round follows a minute later. Frank has a
 day's usage a day or two late and can report it before every hour is in, so a day is read again
 until every carrier with hours has all of them; `ingest_progress` stream `usage` says how far
 usage is complete. `site` picks one of the account's sites; the first by default. A failed round

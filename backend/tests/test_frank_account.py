@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx2
 import pytest
@@ -28,20 +29,20 @@ NOW = dt.datetime(2026, 11, 8, 12, 0, tzinfo=dt.UTC).timestamp()
 EMAIL, PASSWORD = "someone@example.org", "synthetic-password"
 
 
-def hours(day: str, usage: float, count: int = 24) -> list[dict]:
-    """A day's hourly items, from local midnight."""
-    start = dt.datetime.fromisoformat(day).replace(tzinfo=ZONE)
+def hours(day: str, usage: float, count: int | None = None) -> list[dict]:
+    """A day's hourly items from Amsterdam midnight: all of its hours (23 to 25), or ``count``."""
+    amsterdam = ZoneInfo("Europe/Amsterdam")
+    start = dt.datetime.fromisoformat(day).replace(tzinfo=amsterdam).astimezone(dt.UTC)
+    end = (dt.datetime.fromisoformat(day) + dt.timedelta(days=1)).replace(tzinfo=amsterdam)
+    total = round((end.astimezone(dt.UTC) - start).total_seconds() / 3600)
     return [
         {
-            "from": (start + dt.timedelta(hours=h))
-            .astimezone(dt.UTC)
-            .isoformat()
-            .replace("+00:00", "Z"),
+            "from": (start + dt.timedelta(hours=h)).isoformat().replace("+00:00", "Z"),
             "till": "",
             "usage": usage,
             "costs": round(usage * 0.3, 4),
         }
-        for h in range(count)
+        for h in range(total if count is None else count)
     ]
 
 
@@ -314,7 +315,12 @@ async def test_a_first_poll_reads_everything_the_login_gives(tmp_path):
     state = json.loads((tmp_path / STATE_FILE).read_text())
     # Prices are final up to yesterday; the battery's 7 Nov is final, 8 Nov still active; the
     # heater's only day is today.
-    assert state == {"prices": "2026-11-07", "usage": "2026-11-07", "battery:bat1": "2026-11-07"}
+    assert state == {
+        "prices": "2026-11-07",
+        "usage": "2026-11-07",
+        "usage_read": "2026-11-07",
+        "battery:bat1": "2026-11-07",
+    }
 
 
 async def test_the_next_poll_starts_after_each_last_complete_day(tmp_path):
@@ -632,3 +638,142 @@ async def test_rows_without_a_unit_an_empty_month_and_other_days_sessions(tmp_pa
     (day,) = harness.rows("frank_heating_day")
     assert "result" not in day.fields
     assert FrankParams(timezone="Europe/Amsterdam").timezone == "Europe/Amsterdam"
+
+
+async def test_a_long_history_is_read_a_share_per_round(tmp_path, monkeypatch):
+    monkeypatch.setattr("ingest_hub.adapters.frank.account.ROUND_DAYS", 2)
+    api = Frank()
+    api.batteries, api.heaters = [], []
+    async with serving(StubServer(respond=api)) as server, httpx2.AsyncClient() as client:
+        account = FrankAccount(
+            client,
+            server.url,
+            EMAIL,
+            PASSWORD,
+            prefix="frank_",
+            timezone="Europe/Amsterdam",
+            history_days=5,
+            vat_rate=0.21,
+        )
+        harness = Harness(tmp_path)
+        assert await account.poll(harness.context) is True
+        state = json.loads((tmp_path / STATE_FILE).read_text())
+        # Two days of each from 3 Nov; usage days without hours stay unread as complete.
+        assert state["prices"] == "2026-11-04"
+        rounds = 1
+        while await account.poll(harness.context):
+            rounds += 1
+        state = json.loads((tmp_path / STATE_FILE).read_text())
+        assert state["prices"] == "2026-11-07" and rounds >= 2
+        # Today and tomorrow are read in the last round even when the share is spent.
+        days = [
+            b["variables"]["date"] for b in api.requests if "customerMarketPrices" in b["query"]
+        ]
+        assert days[-2:] == ["2026-11-08", "2026-11-09"]
+
+
+async def test_the_source_comes_back_soon_while_history_remains(tmp_path, monkeypatch):
+    async def more(self, context):
+        return True
+
+    monkeypatch.setattr(FrankAccount, "poll", more)
+
+    def respond(request: Received) -> tuple[int, str]:
+        return 200, json.dumps({"data": {"marketPrices": {"electricityPrices": []}}})
+
+    harness = Harness(tmp_path)
+    sleeps: list[float] = []
+
+    async def sleep(seconds):
+        harness.now += seconds
+        sleeps.append(seconds)
+        raise SystemExit
+
+    harness.context.sleep = sleep
+    (tmp_path / "user").write_text(EMAIL)
+    (tmp_path / "pass").write_text(PASSWORD)
+    async with serving(StubServer(respond=respond)) as server, httpx2.AsyncClient() as client:
+        params = FrankParams(
+            url=server.url, username_file=tmp_path / "user", password_file=tmp_path / "pass"
+        )
+        with pytest.raises(SystemExit):
+            await frank.build(params, client).run(harness.context)
+    assert sleeps == [frank.BACKFILL_PAUSE]
+
+
+async def test_recent_unfilled_days_do_not_hold_up_a_long_backfill(tmp_path, monkeypatch):
+    monkeypatch.setattr("ingest_hub.adapters.frank.account.ROUND_DAYS", 3)
+    api = Frank()
+    api.batteries, api.heaters = [], []
+    today = dt.date(2026, 11, 8)
+    for back in range(5, 41):  # 40 days back to 5 days back have every hour
+        day = (today - dt.timedelta(days=back)).isoformat()
+        api.usage[day] = {"electricity": {"items": hours(day, 1.0)}}
+    # 4 days back has some hours; the last three days have none yet: an unfilled tail longer
+    # than a round's share. The oldest days, beyond
+    # GIVE_UP_DAYS, have none either and are taken silently.
+    partial = (today - dt.timedelta(days=4)).isoformat()
+    api.usage[partial] = {"electricity": {"items": hours(partial, 1.0, count=5)}}
+    async with serving(StubServer(respond=api)) as server, httpx2.AsyncClient() as client:
+        account = FrankAccount(
+            client,
+            server.url,
+            EMAIL,
+            PASSWORD,
+            prefix="frank_",
+            timezone="Europe/Amsterdam",
+            history_days=45,
+            vat_rate=0.21,
+        )
+        harness = Harness(tmp_path)
+        rounds = 1
+        while await account.poll(harness.context):
+            rounds += 1
+            assert rounds < 30, "the backfill does not finish"
+    state = json.loads((tmp_path / STATE_FILE).read_text())
+    assert state["usage"] == (today - dt.timedelta(days=5)).isoformat()
+    assert state["usage_read"] == "2026-11-07"
+    assert harness.problems == []
+    # Once the partial day fills in, the next round moves the cursor past it.
+    api.usage[partial] = {"electricity": {"items": hours(partial, 1.0)}}
+    async with serving(StubServer(respond=api)) as server, httpx2.AsyncClient() as client:
+        account = FrankAccount(
+            client,
+            server.url,
+            EMAIL,
+            PASSWORD,
+            prefix="frank_",
+            timezone="Europe/Amsterdam",
+            history_days=45,
+            vat_rate=0.21,
+        )
+        assert await account.poll(Harness(tmp_path).context) is False
+    assert json.loads((tmp_path / STATE_FILE).read_text())["usage"] == partial
+
+
+async def test_the_source_waits_account_minutes_once_history_is_in(tmp_path, monkeypatch):
+    async def done(self, context):
+        return False
+
+    monkeypatch.setattr(FrankAccount, "poll", done)
+
+    def respond(request: Received) -> tuple[int, str]:
+        return 200, json.dumps({"data": {"marketPrices": {"electricityPrices": []}}})
+
+    harness = Harness(tmp_path)
+    sleeps: list[float] = []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        raise SystemExit
+
+    harness.context.sleep = sleep
+    (tmp_path / "user").write_text(EMAIL)
+    (tmp_path / "pass").write_text(PASSWORD)
+    async with serving(StubServer(respond=respond)) as server, httpx2.AsyncClient() as client:
+        params = FrankParams(
+            url=server.url, username_file=tmp_path / "user", password_file=tmp_path / "pass"
+        )
+        with pytest.raises(SystemExit):
+            await frank.build(params, client).run(harness.context)
+    assert sleeps == [3600.0]
