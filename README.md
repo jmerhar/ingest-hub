@@ -164,7 +164,7 @@ every `account_minutes` (60), into tables named with `table_prefix` (`frank_`):
 
 | Table | Tags | What |
 |---|---|---|
-| `frank_price` | `carrier`, `resolution`, `unit` | the contract's own electricity and gas prices, which can differ from the public ones in surcharge and resolution |
+| `frank_price` | `carrier`, `resolution`, `unit` | the contract's prices: electricity per public market period with the contract's surcharge and energy tax (Frank gives a contract's prices only as hourly averages), gas as the contract gives it |
 | `frank_usage` | `carrier` (`electricity`, `gas`, `feed_in`) | billed `usage` and `costs` per hour |
 | `frank_battery`, `frank_battery_day` | `battery` | a smart-trading battery's state, and each day's trading results in EUR |
 | `frank_heating`, `frank_heating_day` | `device` | smart heating's state and totals, and each day's results |

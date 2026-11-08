@@ -238,6 +238,7 @@ def build(params: FrankParams, client: httpx2.AsyncClient, _name: str = "") -> F
             history_days=params.history_days,
             vat_rate=params.vat_rate,
             site=params.site,
+            quarter_hours_from=params.quarter_hours_from,
         )
     return FrankSource(params, client, account)
 

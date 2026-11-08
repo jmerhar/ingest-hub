@@ -67,6 +67,7 @@ class Frank:
         self.batteries = [{"id": "bat1", "createdAt": "2026-11-07T13:11:34.503Z"}]
         self.heaters = [{"id": "hvac1", "createdAt": "2026-11-08T08:44:20.543Z"}]
         self.requests: list[dict] = []
+        self.unpublished: set[str] = set()
 
     def __call__(self, request: Received) -> tuple[int, str]:
         body = json.loads(request.body)
@@ -85,11 +86,40 @@ class Frank:
             return 200, json.dumps(
                 {"data": None, "errors": [{"message": "user-error:auth-not-authorised"}]}
             )
-        return 200, json.dumps({"data": self.answer(query, v)})
+        data = self.answer(query, v)
+        if "__errors__" in data:
+            return 200, json.dumps({"data": None, "errors": data["__errors__"]})
+        return 200, json.dumps({"data": data})
 
     def answer(self, query: str, v: dict) -> dict:
         if "userSites" in query:
             return {"userSites": self.sites}
+        if "marketPrices(" in query and "customerMarketPrices" not in query:
+            if v["date"] in self.unpublished:
+                raise_not_published = {"message": f"No marketprices found for {v['date']}"}
+                return {"__errors__": [raise_not_published]}
+            step = 15 if v["resolution"] == "PT15M" else 60
+            return {
+                "marketPrices": {
+                    "electricityPrices": [
+                        {
+                            "from": f"{v['date']}T10:{m:02d}:00.000Z",
+                            "resolution": v["resolution"],
+                            "marketPrice": round(0.20 + m / 1000, 5),
+                            "marketPriceTax": 0.04,
+                        }
+                        for m in range(0, 60, step)
+                    ]
+                    # A period in an hour the contract has no price for is left out.
+                    + [
+                        {
+                            "from": f"{v['date']}T11:00:00.000Z",
+                            "marketPrice": 1,
+                            "marketPriceTax": 0,
+                        }
+                    ]
+                }
+            }
         if "customerMarketPrices" in query:
             row = {
                 "from": f"{v['date']}T10:00:00.000Z",
@@ -249,21 +279,23 @@ async def test_a_first_poll_reads_everything_the_login_gives(tmp_path):
     assert sorted(
         {dt.datetime.fromtimestamp(p.timestamp, dt.UTC).date().isoformat() for p in prices}
     ) == ["2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09"]
-    electricity = prices[0]
-    assert electricity.tags == (
-        ("carrier", "electricity"),
-        ("resolution", "PT60M"),
-        ("unit", "KWH"),
-    )
-    assert electricity.fields == {
+    electricity = [p for p in prices if dict(p.tags)["carrier"] == "electricity"]
+    # Each day's four quarter hours of the 10:00 hour, priced with the contract's hour.
+    assert len(electricity) == 4 * 4
+    second = electricity[1]
+    assert second.tags == (("carrier", "electricity"), ("resolution", "PT15M"), ("unit", "KWH"))
+    assert second.timestamp == int(dt.datetime(2026, 11, 6, 10, 15, tzinfo=dt.UTC).timestamp())
+    assert second.fields == {
         "vat_rate": 0.21,
-        "market_price_excl_vat": 0.24,
-        "market_price_incl_vat": 0.24 + 0.05,
+        "market_price_excl_vat": 0.215,
+        "market_price_incl_vat": 0.215 + 0.04,
         "surcharge_incl_vat": 0.025,
         "energy_tax_incl_vat": 0.11,
-        "total_incl_vat": 0.43,
+        "total_incl_vat": 0.215 + 0.04 + 0.025 + 0.11,
     }
-    assert dict(prices[1].tags)["carrier"] == "gas"
+    gas = [p for p in prices if dict(p.tags)["carrier"] == "gas"]
+    assert len(gas) == 4 and gas[0].fields["total_incl_vat"] == 1.8
+    assert dict(gas[0].tags) == {"carrier": "gas", "resolution": "PT60M", "unit": "M3"}
 
     usage = harness.rows("frank_usage")
     assert len(usage) == 4 * 24  # two days, electricity and gas; an empty feed-in writes nothing
@@ -617,7 +649,8 @@ async def test_rows_without_a_unit_an_empty_month_and_other_days_sessions(tmp_pa
     def answer(query, v):
         data = plain(query, v)
         if "customerMarketPrices" in query:
-            for row in data["customerMarketPrices"]["electricityPrices"]:
+            prices = data["customerMarketPrices"]
+            for row in prices["electricityPrices"] + prices["gasPrices"]:
                 row.pop("perUnit")
         if "monthSummary" in query:
             data = {"monthSummary": None}
@@ -625,11 +658,8 @@ async def test_rows_without_a_unit_an_empty_month_and_other_days_sessions(tmp_pa
 
     api.answer = answer
     harness = await poll(tmp_path, api, history_days=0)
-    assert all(
-        "unit" not in dict(p.tags)
-        for p in harness.rows("frank_price")
-        if dict(p.tags)["carrier"] == "electricity"
-    )
+    assert harness.rows("frank_price")
+    assert all("unit" not in dict(p.tags) for p in harness.rows("frank_price"))
     assert harness.rows("frank_month") == []
     # A period whose sessions are for other days gives no session figures.
     api.heaters = [{"id": "hvac1", "createdAt": "2026-11-08T08:00:00Z"}]
@@ -777,3 +807,29 @@ async def test_the_source_waits_account_minutes_once_history_is_in(tmp_path, mon
         with pytest.raises(SystemExit):
             await frank.build(params, client).run(harness.context)
     assert sleeps == [3600.0]
+
+
+async def test_hourly_market_periods_before_the_switch_and_unpublished_days(tmp_path):
+    api = Frank()
+    api.batteries, api.heaters = [], []
+    api.unpublished = {"2026-11-09"}
+    harness = await poll(tmp_path, api, history_days=0, quarter_hours_from=dt.date(2026, 11, 9))
+    electricity = [
+        p for p in harness.rows("frank_price") if dict(p.tags)["carrier"] == "electricity"
+    ]
+    # 8 Nov is before the switch, so one hourly period; tomorrow is not published yet.
+    assert [dict(p.tags)["resolution"] for p in electricity] == ["PT60M"]
+
+
+async def test_other_price_errors_are_raised(tmp_path):
+    api = Frank()
+    plain = api.answer
+
+    def answer(query, v):
+        if "marketPrices(" in query and "customerMarketPrices" not in query:
+            return {"__errors__": [{"message": "something else"}]}
+        return plain(query, v)
+
+    api.answer = answer
+    with pytest.raises(FrankAccountError, match="something else"):
+        await poll(tmp_path, api, history_days=0)

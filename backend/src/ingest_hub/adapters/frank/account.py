@@ -3,10 +3,14 @@
 Every ``account_minutes`` the source logs in (once, and again when Frank refuses the token) and
 writes, with ``table_prefix`` (``frank_``) before each table:
 
-- ``price``: the contract's own prices, tagged ``carrier`` (``electricity``, ``gas``),
-  ``resolution`` and ``unit``: ``market_price_excl_vat``, ``market_price_incl_vat``,
-  ``surcharge_incl_vat``, ``energy_tax_incl_vat`` and ``total_incl_vat``. These are what the
-  customer pays, which can differ from the public prices in surcharge and resolution.
+- ``price``: the contract's prices, tagged ``carrier`` (``electricity``, ``gas``), ``resolution``
+  and ``unit``: ``market_price_excl_vat``, ``market_price_incl_vat``, ``surcharge_incl_vat``,
+  ``energy_tax_incl_vat`` and ``total_incl_vat``. Frank gives a contract's prices per hour, with
+  the market price averaged over the hour, while it bills electricity per market period; so
+  electricity is written per public market period (quarter hours from ``quarter_hours_from``),
+  its market price from the public prices and its surcharge and energy tax from the contract's
+  hour, and ``total_incl_vat`` is their sum. The contract's surcharge can differ from the public
+  one. Gas is written as the contract gives it.
 - ``usage``: what Frank bills per hour, tagged ``carrier`` (``electricity``, ``gas``, ``feed_in``):
   ``usage`` (kWh or m³) and ``costs`` (EUR). Frank has a day's figures a day or two late and can
   report a day before every hour is in, so a day counts as complete only once each carrier that
@@ -78,6 +82,13 @@ PRICES = (
     "customerMarketPrices(date: $date, siteReference: $site)"
     f" {{ electricityPrices {{ {PRICE_FIELDS} }} gasPrices {{ {PRICE_FIELDS} }} }} }}"
 )
+MARKET = (
+    "query($date: String!, $resolution: PriceResolution!) { marketPrices(date: $date, "
+    "resolution: $resolution) { electricityPrices { from resolution marketPrice "
+    "marketPriceTax } } }"
+)
+#: The message Frank answers with for a day it has no prices for (yet).
+NOT_PUBLISHED = "No marketprices found"
 CARRIER_ITEMS = "usageTotal costsTotal items { from till usage costs }"
 USAGE = (
     "query($date: String!, $site: String!) { periodUsageAndCosts(date: $date, siteReference: $site)"
@@ -133,6 +144,7 @@ class FrankAccount:
         history_days: int,
         vat_rate: float,
         site: str | None = None,
+        quarter_hours_from: dt.date = dt.date(2025, 10, 1),
     ) -> None:
         self._client = client
         self._url = url
@@ -143,6 +155,7 @@ class FrankAccount:
         self._history_days = history_days
         self._vat_rate = vat_rate
         self._site = site
+        self._quarter_hours_from = quarter_hours_from
         self._token: str | None = None
 
     # ------------------------------------------------------------------ requests
@@ -247,19 +260,58 @@ class FrankAccount:
             if read >= ROUND_DAYS and day < today:
                 return True
             read += 1
-            data = await self.query(context, PRICES, date=day.isoformat(), site=site)
-            prices = data.get("customerMarketPrices") or {}
-            points = [
-                self._price_point(carrier, row)
-                for carrier, key in (("electricity", "electricityPrices"), ("gas", "gasPrices"))
-                for row in prices.get(key) or []
-            ]
+            contract = await self._published(
+                context, PRICES, "customerMarketPrices", date=day.isoformat(), site=site
+            )
+            resolution = "PT15M" if day >= self._quarter_hours_from else "PT60M"
+            market = await self._published(
+                context, MARKET, "marketPrices", date=day.isoformat(), resolution=resolution
+            )
+            hours = {_stamp(r["from"]): r for r in contract.get("electricityPrices") or []}
+            points = []
+            for row in market.get("electricityPrices") or []:
+                start = _stamp(row["from"])
+                hour = hours.get(start - start % 3600)
+                if hour is not None:
+                    points.append(self._electricity_point(row, hour))
+            points += [self._price_point("gas", row) for row in contract.get("gasPrices") or []]
             await self._emit(context, points)
             if day < today:
                 state["prices"] = day.isoformat()
                 _save(path, state)
             day += dt.timedelta(days=1)
         return False
+
+    async def _published(self, context, query: str, key: str, **variables: str) -> dict[str, Any]:
+        """A price query's answer, or nothing for a day Frank has not published yet."""
+        try:
+            return (await self.query(context, query, **variables)).get(key) or {}
+        except FrankAccountError as error:
+            if NOT_PUBLISHED in str(error):
+                return {}
+            raise
+
+    def _electricity_point(self, market: dict[str, Any], hour: dict[str, Any]) -> Point:
+        """A market period's electricity price with the contract's surcharge and energy tax."""
+        spot, tax = float(market["marketPrice"]), float(market["marketPriceTax"])
+        surcharge = float(hour["consumptionSourcingMarkupPrice"])
+        energy_tax = float(hour["energyTax"])
+        tags = {"carrier": "electricity", "resolution": str(market.get("resolution") or "PT60M")}
+        if hour.get("perUnit"):
+            tags["unit"] = str(hour["perUnit"])
+        return self._point(
+            "price",
+            tags,
+            _stamp(market["from"]),
+            {
+                "vat_rate": float(self._vat_rate),
+                "market_price_excl_vat": spot,
+                "market_price_incl_vat": spot + tax,
+                "surcharge_incl_vat": surcharge,
+                "energy_tax_incl_vat": energy_tax,
+                "total_incl_vat": spot + tax + surcharge + energy_tax,
+            },
+        )
 
     def _price_point(self, carrier: str, row: dict[str, Any]) -> Point:
         spot, tax = float(row["marketPrice"]), float(row["marketPriceTax"])
