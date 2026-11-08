@@ -12,6 +12,9 @@
 # faults), timing and dispatch (the battery's charge and discharge control, which a controller
 # such as evcc may set), and the slow-changing inverter_info, system_info and system_config.
 #
+# The energy totals skip zeros: the inverter answers zero for the grid meter's totals while it is
+# out of touch with the meter.
+#
 # Built from Alpha2MQTT's Definitions.h and RegisterHandler.cpp; write-only registers are
 # left out.
 
@@ -45,6 +48,7 @@ type = "u16"
 [[registers]]
 table = "grid"
 name = "total_energy_feed_to_grid"
+skip_zero = true
 address = 0x0010
 type = "u32"
 scale = 0.01
@@ -53,6 +57,7 @@ unit = "kWh"
 [[registers]]
 table = "grid"
 name = "total_energy_consumed_from_grid"
+skip_zero = true
 address = 0x0012
 type = "u32"
 scale = 0.01
@@ -238,6 +243,7 @@ type = "u16"
 [[registers]]
 table = "pv_meter"
 name = "total_energy_feed_to_grid"
+skip_zero = true
 address = 0x0090
 type = "u32"
 scale = 0.01
@@ -246,6 +252,7 @@ unit = "kWh"
 [[registers]]
 table = "pv_meter"
 name = "total_energy_consumed_from_grid"
+skip_zero = true
 address = 0x0092
 type = "u32"
 scale = 0.01
@@ -625,6 +632,7 @@ type = "u32"
 [[registers]]
 table = "battery"
 name = "battery_charge_energy"
+skip_zero = true
 address = 0x0120
 type = "u32"
 scale = 0.1
@@ -633,6 +641,7 @@ unit = "kWh"
 [[registers]]
 table = "battery"
 name = "battery_discharge_energy"
+skip_zero = true
 address = 0x0122
 type = "u32"
 scale = 0.1
@@ -641,6 +650,7 @@ unit = "kWh"
 [[registers]]
 table = "battery"
 name = "battery_energy_charge_from_grid"
+skip_zero = true
 address = 0x0124
 type = "u32"
 scale = 0.1
@@ -1129,6 +1139,7 @@ type = "u32"
 [[registers]]
 table = "inverter"
 name = "inverter_total_pv_energy"
+skip_zero = true
 address = 0x043e
 type = "u32"
 scale = 0.1
@@ -1415,6 +1426,7 @@ type = "u16"
 [[registers]]
 table = "system"
 name = "pv_inverter_energy"
+skip_zero = true
 address = 0x08d0
 type = "u32"
 scale = 0.01
@@ -1423,6 +1435,7 @@ unit = "kWh"
 [[registers]]
 table = "system"
 name = "system_total_pv_energy"
+skip_zero = true
 address = 0x08d2
 type = "u32"
 scale = 0.01

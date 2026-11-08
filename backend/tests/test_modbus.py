@@ -502,3 +502,16 @@ def test_as_float_keeps_an_unscaled_number_a_float():
     assert forced.decode([33]) == 33.0 and isinstance(forced.decode([33]), float)
     temp = next(r for r in load_map("alphaess").registers if r.name == "inverter_temp")
     assert temp.decode([330]) == 33.0
+
+
+def test_skip_zero_leaves_out_a_zero_from_a_running_total():
+    total = Register(table="t", name="total", address=0, type="u32", scale=0.1, skip_zero=True)
+    assert total.decode([0, 0]) is None
+    assert total.decode([0, 1012]) == 101.2
+    grid = {r.name: r for r in load_map("alphaess").registers if r.table == "grid"}
+    assert grid["total_energy_consumed_from_grid"].skip_zero
+    assert grid["total_active_power"].decode([0, 0]) == 0
+    (port,) = load_map("hoymiles-dtu").repeats
+    production = next(f for f in port.fields if f.name == "total_production")
+    assert production.decode(bytes(40)) is None
+    assert production.decode(bytes(20) + (1184).to_bytes(4, "big") + bytes(16)) == 1184

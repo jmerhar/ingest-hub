@@ -20,6 +20,7 @@ A map is a TOML file::
     scale = 0.1
     offset = 0            # value = raw * scale - offset
     as_float = false      # store an unscaled number as a float rather than an integer
+    skip_zero = false     # leave out a raw reading of zero
     unit = "%"
 
     [[repeats]]           # the same block for each of several slots
@@ -40,6 +41,10 @@ A map is a TOML file::
 A number is an integer when its scale is 1 and its offset 0 and the map does not set
 ``as_float``, else a float, so a field's type is fixed by the map and never changes between
 readings; ``as_float`` keeps a field a float when its scale becomes 1.
+
+``skip_zero`` suits running totals, such as lifetime energy counters: some devices answer zero for
+them while their meter is briefly out of reach or around a daily rollover, and a stored zero
+would read as the counter dropping to nothing and climbing back.
 """
 
 from __future__ import annotations
@@ -74,11 +79,14 @@ class _Value(BaseModel):
     scale: float = 1.0
     offset: float = 0.0
     as_float: bool = False
+    skip_zero: bool = False
     unit: str = ""
 
-    def number(self, raw: int) -> FieldValue:
+    def number(self, raw: int) -> FieldValue | None:
         """A decoded integer, scaled; an integer when the map neither scales it nor asks for a
-        float."""
+        float. None for a zero when the map skips zeros."""
+        if raw == 0 and self.skip_zero:
+            return None
         if self.scale == 1 and self.offset == 0 and not self.as_float:
             return raw
         # Rounded, so 393 at 0.1 is 39.3 rather than 39.300000000000004.

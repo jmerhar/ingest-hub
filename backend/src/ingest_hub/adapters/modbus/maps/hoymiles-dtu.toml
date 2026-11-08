@@ -4,6 +4,8 @@
 # slot without a serial number ends the list. Each slot gives the port's DC side, the inverter's
 # grid side, production and status, tagged by the inverter's serial number and the port.
 #
+# total_production skips zeros: the DTU answers zero for it for about an hour around midnight.
+#
 # PV current is in hundredths of an ampere on HM and HMS inverters; MI inverters (serial numbers
 # starting 10) report tenths, so for those the stored current is a tenth of the real one.
 
@@ -90,6 +92,7 @@ unit = "Wh"
 
 [[repeats.fields]]
 name = "total_production"
+skip_zero = true
 byte = 20
 type = "u32"
 unit = "Wh"

@@ -139,7 +139,8 @@ class ZaptecSource:
         try:
             await poll(context)
         except (ZaptecError, httpx2.HTTPError, ValueError, KeyError, TypeError) as error:
-            message = f"{poll.__name__}: {error}"
+            # A timeout's message is empty, so its type names it.
+            message = f"{poll.__name__}: {str(error) or type(error).__name__}"
             context.problem(message)
             logger.warning("%s", message)
             return False

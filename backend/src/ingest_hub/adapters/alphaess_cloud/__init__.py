@@ -112,8 +112,10 @@ class AlphaCloudSource:
             try:
                 await self.poll(context)
             except (AlphaCloudError, httpx2.HTTPError, ValueError, KeyError, TypeError) as error:
-                context.problem(str(error))
-                logger.warning("AlphaESS cloud: %s", error)
+                # A timeout's message is empty, so its type names it.
+                message = str(error) or type(error).__name__
+                context.problem(message)
+                logger.warning("AlphaESS cloud: %s", message)
             else:
                 context.succeeded()
             await context.sleep(self._params.poll_minutes * 60)

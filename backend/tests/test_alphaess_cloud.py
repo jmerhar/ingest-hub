@@ -258,3 +258,19 @@ def test_params_and_registration(tmp_path):
     assert isinstance(source, AlphaCloudSource) and source._secret == "a-secret"
     with pytest.raises(ValidationError):
         AlphaCloudParams(app_id_file="/x", app_secret_file="/y", timezone="Mars/Olympus")
+
+
+class TimingOut:
+    """A client whose every request times out, as httpx2 reports it: with an empty message."""
+
+    async def get(self, *args, **kwargs):
+        raise httpx2.ReadTimeout("")
+
+
+async def test_a_timeout_is_reported_by_its_type(tmp_path):
+    harness = Harness(tmp_path)
+    harness.stop_at = 1
+    params = AlphaCloudParams(app_id_file="/x", app_secret_file="/y")
+    with pytest.raises(Stop):
+        await AlphaCloudSource(params, TimingOut(), APP_ID, SECRET).run(harness.context)
+    assert harness.problems == ["ReadTimeout"]

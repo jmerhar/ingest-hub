@@ -162,8 +162,11 @@ function card(source, doc) {
   const list = el("dl");
   for (const [k, v] of rows) list.append(el("dt", {}, k), el("dd", {}, v));
   if (source.last_error) {
+    // An error that a later success has cleared stays listed, in grey rather than red.
+    const cleared = source.last_success && source.last_success > source.last_error_at;
     list.append(el("dt", {}, "last error"),
-      el("dd", { class: "error" }, source.last_error + " (" + ago(now - source.last_error_at) + ")"));
+      el("dd", { class: cleared ? "muted" : "error" },
+         source.last_error + " (" + ago(now - source.last_error_at) + (cleared ? ", since recovered" : "") + ")"));
   }
   const node = el("section", { class: "card" },
     el("h2", {}, el("span", { class: "dot " + level, title: level }), source.name,

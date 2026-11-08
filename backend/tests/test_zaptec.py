@@ -357,3 +357,15 @@ async def test_a_failed_daily_refresh_keeps_the_names_it_has(tmp_path):
     first, second = (b[0] for b in harness.batches)
     assert second.fields == first.fields
     assert sum(r.path == "/api/constants" for r in bridge.requests) == 2
+
+
+async def test_a_timeout_is_reported_by_its_type(tmp_path):
+    class TimingOut:
+        async def get(self, *args, **kwargs):
+            raise httpx2.ReadTimeout("")
+
+    harness = Harness(tmp_path)
+    source = ZaptecSource(ZaptecParams(bridge_url="http://bridge"), TimingOut())
+    with pytest.raises(Stop):
+        await source.run(harness.context)
+    assert harness.problems == ["poll_state: ReadTimeout", "poll_sessions: ReadTimeout"]
