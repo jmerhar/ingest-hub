@@ -1,6 +1,12 @@
-"""Frank Energie's public electricity market prices, from its GraphQL ``marketPrices`` query.
+"""Frank Energie: its public electricity market prices and, with a customer's login, their
+account's data (see ``account.py``).
 
-Each poll asks for today and tomorrow (by UTC date) and writes one point per price period,
+Every ``poll_hours`` the source asks the public GraphQL ``marketPrices`` query for today and
+tomorrow (by UTC date) and writes one point per price period, tagged by market and resolution, at
+the period's start. With ``username_file`` and ``password_file`` it also reads the account every
+``account_minutes``. A failed round is reported, and the source carries on with the next one.
+
+Each price poll asks for today and tomorrow (by UTC date) and writes one point per price period,
 tagged by market and resolution, at the period's start. Frank publishes tomorrow's prices in the
 afternoon, so until then tomorrow's query finds nothing; that is expected, not an error.
 
@@ -19,13 +25,17 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx2
 from jigkit.sinks import Point, Precision
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ingest_hub.adapters.frank.account import FrankAccount, FrankAccountError
 from ingest_hub.collect import SourceContext
+from ingest_hub.config import read_secret
 
 logger = logging.getLogger(__name__)
 
@@ -58,21 +68,89 @@ class FrankParams(BaseModel):
     poll_hours: float = Field(6, gt=0)
     #: Days from this date on are asked for at 15-minute resolution, earlier ones hourly.
     quarter_hours_from: date = date(2025, 10, 1)
+    #: A customer's login, which adds their account's data; both or neither.
+    username_file: Path | None = None
+    password_file: Path | None = None
+    #: The account's site to read; the first one when not set.
+    site: str | None = None
+    account_minutes: float = Field(60, gt=0)
+    #: Put before each account table's name.
+    table_prefix: str = Field("frank_", pattern=r"^([A-Za-z_][A-Za-z0-9_]*)?$")
+    #: The site's time zone, which days are counted in.
+    timezone: str = "Europe/Amsterdam"
+    #: How far back account prices and usage are read the first time.
+    history_days: int = Field(60, ge=0)
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError(f"unknown time zone {value!r}") from error
+        return value
+
+    @model_validator(mode="after")
+    def _both_or_neither(self) -> FrankParams:
+        if (self.username_file is None) != (self.password_file is None):
+            raise ValueError("username_file and password_file go together")
+        return self
 
 
 class FrankSource:
     """Polls Frank's market prices for today and tomorrow."""
 
-    def __init__(self, params: FrankParams, client: httpx2.AsyncClient) -> None:
+    def __init__(
+        self,
+        params: FrankParams,
+        client: httpx2.AsyncClient,
+        account: FrankAccount | None = None,
+    ) -> None:
         self._params = params
         self._client = client
+        self._account = account
 
     async def run(self, context: SourceContext) -> None:
-        """Poll for ever, one poll every ``poll_hours``."""
+        """Poll the prices every ``poll_hours`` and the account every ``account_minutes``, for
+        ever, reporting a failed round rather than raising it."""
+        due = {"prices": context.clock(), "account": context.clock()}
+        if self._account is None:
+            due.pop("account")
+        every = {
+            "prices": self._params.poll_hours * 3600,
+            "account": self._params.account_minutes * 60,
+        }
         while True:
-            await self.poll(context)
-            context.succeeded()
-            await context.sleep(self._params.poll_hours * 3600)
+            ok = True
+            for name in list(due):
+                if context.clock() >= due[name]:
+                    due[name] = context.clock() + every[name]
+                    ok = await self._attempt(context, name) and ok
+            if ok:
+                context.succeeded()
+            await context.sleep(max(1.0, min(due.values()) - context.clock()))
+
+    async def _attempt(self, context: SourceContext, name: str) -> bool:
+        """One round of prices or account data; a failure is reported, not raised."""
+        try:
+            if name == "prices":
+                await self.poll(context)
+            else:
+                assert self._account is not None
+                await self._account.poll(context)
+        except (
+            FrankError,
+            FrankAccountError,
+            httpx2.HTTPError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ) as error:
+            message = f"{name}: {str(error) or type(error).__name__}"
+            context.problem(message)
+            logger.warning("Frank %s", message)
+            return False
+        return True
 
     async def poll(self, context: SourceContext) -> None:
         """Fetch and deliver today's and tomorrow's prices."""
@@ -141,8 +219,21 @@ class FrankSource:
 
 
 def build(params: FrankParams, client: httpx2.AsyncClient, _name: str = "") -> FrankSource:
-    """A Frank source from its validated parameters."""
-    return FrankSource(params, client)
+    """A Frank source from its validated parameters, with the login read now when it has one."""
+    account = None
+    if params.username_file is not None and params.password_file is not None:
+        account = FrankAccount(
+            client,
+            params.url,
+            read_secret(params.username_file),
+            read_secret(params.password_file),
+            prefix=params.table_prefix,
+            timezone=params.timezone,
+            history_days=params.history_days,
+            vat_rate=params.vat_rate,
+            site=params.site,
+        )
+    return FrankSource(params, client, account)
 
 
 __all__ = ["FrankError", "FrankParams", "FrankSource", "build"]

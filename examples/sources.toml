@@ -70,7 +70,8 @@ topic = "<meter name>/status/emdata:0"
 table = "meter_energy"
 tags = { device = "{0}" }
 
-# Frank Energie's public electricity market prices; no credentials needed.
+# Frank Energie's public electricity market prices; with a customer's login, also their
+# contract's prices, billed usage, smart battery and heating results and month summary.
 [sources.prices]
 kind = "frank"
 destination = "home"
@@ -81,6 +82,13 @@ destination = "home"
 # vat_rate = 0.21
 # poll_hours = 6
 # quarter_hours_from = 2025-10-01  # 15-minute periods from this day, hourly before
+# username_file = "/run/secrets/frank_username"   # both or neither
+# password_file = "/run/secrets/frank_password"
+# site = "<site reference>"       # the account's first site when not set
+# account_minutes = 60
+# table_prefix = "frank_"
+# timezone = "Europe/Amsterdam"
+# history_days = 60
 
 # A Vaillant heating system through the myVAILLANT cloud.
 [sources.heating]

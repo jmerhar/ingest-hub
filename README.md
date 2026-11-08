@@ -139,7 +139,7 @@ QoS 1 and 2 messages for the hub while it reconnects. A dropped connection resta
 after its back-off. MQTT sources write no `ingest_progress`: a pushed stream has no position to
 report.
 
-### Frank Energie prices
+### Frank Energie
 
 `kind = "frank"` polls Frank Energie's public GraphQL `marketPrices` every `poll_hours` (6) for
 today and tomorrow (by UTC date): 15-minute periods from `quarter_hours_from` (1 Oct 2025),
@@ -158,6 +158,24 @@ hourly before. One point per period in `table` (`electricity_price`), at the per
 
 Tomorrow's prices appear in the afternoon; until then that day is skipped and logged, not an
 error.
+
+With a customer's login (`username_file`, `password_file`) the source also reads their account
+every `account_minutes` (60), into tables named with `table_prefix` (`frank_`):
+
+| Table | Tags | What |
+|---|---|---|
+| `frank_price` | `carrier`, `resolution`, `unit` | the contract's own electricity and gas prices, which can differ from the public ones in surcharge and resolution |
+| `frank_usage` | `carrier` (`electricity`, `gas`, `feed_in`) | billed `usage` and `costs` per hour |
+| `frank_battery`, `frank_battery_day` | `battery` | a smart-trading battery's state, and each day's trading results in EUR |
+| `frank_heating`, `frank_heating_day` | `device` | smart heating's state and totals, and each day's results |
+| `frank_month` | `site` | the month's actual and expected costs so far |
+
+Days are counted in `timezone` (`Europe/Amsterdam`). The first time, prices and usage are read
+from `history_days` (60) back, battery and heating days from the device's creation. Frank has a
+day's usage a day or two late and can report it before every hour is in, so a day is read again
+until every carrier with hours has all of them; `ingest_progress` stream `usage` says how far
+usage is complete. `site` picks one of the account's sites; the first by default. A failed round
+of prices or account data is reported, and the source carries on with the next.
 
 ### Vaillant
 
