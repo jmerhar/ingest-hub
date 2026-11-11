@@ -110,7 +110,10 @@ async def test_a_written_batch_carries_progress_beats_and_shows_in_status(tmp_pa
     async with serving(StubServer(status=200)) as monitor, httpx2.AsyncClient() as client:
         spec = SourceSpec("plugs", "tuya", source, "home", sink, f"{monitor.url}/push/TOKEN")
         runtime = make_runtime(tmp_path, [spec], client)
-        await run_until(runtime, lambda: monitor.requests and source.done.is_set())
+        # The heartbeat counts once its answer is back, a moment after the monitor sees it.
+        await run_until(
+            runtime, lambda: source.done.is_set() and runtime.statuses[0].heartbeat_ok is not None
+        )
 
     assert source.result is True
     (batch,) = sink.accepted
