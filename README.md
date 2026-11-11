@@ -241,6 +241,23 @@ inbox = "/data/inbox/vaillant"
 devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
 ```
 
+With `fetch`, the source also fetches an export from the portal itself every `every_hours` (24),
+signing in as the portal's web page does, its login form's proof-of-work check (Altcha) included,
+and saves it in `inbox` as `euda-data-<UTC time>.json`, readable by its owner only, for the next
+scan. Give it a myVAILLANT account of its own rather than the `vaillant` source's, so that a
+locked account cannot stop both. A failed fetch is reported and tried again after
+`retry_minutes` (60); until a fetch succeeds the source's rounds don't count as successes, so
+its alerts fire. `realm` is the account's myVAILLANT realm, by country:
+
+```toml
+[sources.heating_export.params.fetch]
+username_file = "/run/secrets/vaillant_export_username"
+password_file = "/run/secrets/vaillant_export_password"
+# realm = "vaillant-netherlands-b2c"
+# every_hours = 24
+# retry_minutes = 60
+```
+
 ### Modbus
 
 `kind = "modbus"` reads a Modbus TCP device (`host`, `port` 502, `unit` 1) through a register

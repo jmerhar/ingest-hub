@@ -107,7 +107,8 @@ password_file = "/run/secrets/vaillant_password"
 # rescan_hours = 48                # each energy poll re-reads this much before the cursor
 # pause_minutes = 60               # the longest a quota or server error is waited out
 
-# Vaillant's EU Data Act exports, imported from the files dropped into the inbox.
+# Vaillant's EU Data Act exports, imported from the files dropped into the inbox, and with
+# `fetch` also fetched from the portal.
 [sources.heating_export]
 kind = "vaillant_export"
 destination = "home"
@@ -117,6 +118,14 @@ inbox = "/data/inbox/vaillant"
 # scan_minutes = 10
 # The vaillant source's device names, so both write to the same series.
 devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
+
+# Fetch an export from the portal daily as well, with a myVAILLANT account of its own.
+# [sources.heating_export.params.fetch]
+# username_file = "/run/secrets/vaillant_export_username"
+# password_file = "/run/secrets/vaillant_export_password"
+# realm = "vaillant-netherlands-b2c"
+# every_hours = 24
+# retry_minutes = 60
 
 # A hybrid inverter and battery over Modbus TCP, here through a proxy that shares the device's
 # single connection with another controller.

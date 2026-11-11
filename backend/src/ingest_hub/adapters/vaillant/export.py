@@ -36,6 +36,12 @@ later export. Every scan imports each ``*.json`` file in ``inbox`` and moves it 
 ``imported/`` beside it once its points are safe, or to ``failed/`` when it cannot be read.
 Importing the same messages again writes the same points, so overlapping exports are harmless.
 No progress is published: exports arrive whenever someone drops one.
+
+With ``fetch`` set, the source also fetches an export from the portal itself (see
+``portal.py``) every ``every_hours``, with a portal account of its own, and saves it in the inbox
+as ``euda-data-<UTC time>.json``, readable by its owner only, where the next scan imports it. A
+failed fetch is reported, tried again after ``retry_minutes``, and keeps the round from counting
+as a success, so it raises the source's alerts while it lasts.
 """
 
 from __future__ import annotations
@@ -56,7 +62,9 @@ import httpx2
 from jigkit.sinks import FieldValue, Point, Precision
 from pydantic import BaseModel, ConfigDict, Field
 
+from ingest_hub.adapters.vaillant.portal import PORTAL_URL, Portal, PortalError
 from ingest_hub.collect import SourceContext
+from ingest_hub.config import read_secret
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,8 @@ FAILED = "failed"
 TOPOLOGY = "hvac-topology"
 #: The device names learnt from topologies, in the source's state directory.
 NAMES_FILE = "vaillant-export-devices.json"
+#: When the portal was last fetched from, in the source's state directory.
+FETCH_FILE = "vaillant-export-fetch.json"
 #: eBUS values that mean "no reading", left out rather than stored.
 NO_VALUE = frozenset({"", "NO_VALUE"})
 TRUE = frozenset({"on", "true"})
@@ -88,6 +98,20 @@ class ExportError(Exception):
     """A file is not an export that can be read; the message says why."""
 
 
+class FetchParams(BaseModel):
+    """Fetching exports from the portal: a portal account and how often."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    username_file: Path
+    password_file: Path
+    #: The account's myVAILLANT realm, by country.
+    realm: str = "vaillant-netherlands-b2c"
+    url: str = PORTAL_URL
+    every_hours: float = Field(24, gt=0)
+    retry_minutes: float = Field(60, gt=0)
+
+
 class VaillantExportParams(BaseModel):
     """A Vaillant export source's ``params`` in the configuration file."""
 
@@ -99,6 +123,8 @@ class VaillantExportParams(BaseModel):
     scan_minutes: float = Field(10, gt=0)
     #: Device names to write instead of the ones the export gives, by the export's name.
     devices: dict[str, str] = {}
+    #: Fetch exports from the portal as well as importing dropped ones.
+    fetch: FetchParams | None = None
 
 
 def _snake(name: str) -> str:
@@ -344,23 +370,58 @@ class VaillantExportSource:
 
     file_suffixes = (".json",)
 
-    def __init__(self, params: VaillantExportParams) -> None:
+    def __init__(self, params: VaillantExportParams, portal: Portal | None = None) -> None:
         self._params = params
         self.inbox = params.inbox
         self._woken = asyncio.Event()
+        self._portal = portal
+        #: When the next fetch is due; read from the state directory on the first round.
+        self._fetch_due: float | None = None
 
     def wake(self) -> None:
         """Scan the inbox now rather than at the next scan, for a file just saved there."""
         self._woken.set()
 
     async def run(self, context: SourceContext) -> None:
-        """Scan the inbox every ``scan_minutes``, and whenever woken, for ever."""
+        """Fetch when due, scan the inbox every ``scan_minutes`` and whenever woken, for ever."""
         self.inbox.mkdir(parents=True, exist_ok=True)
         while True:
             self._woken.clear()
+            fetched = await self.fetch(context)
             await self.scan(context)
-            context.succeeded()
-            await self._wait(context, self._params.scan_minutes * 60)
+            if fetched:
+                context.succeeded()
+            wait = self._params.scan_minutes * 60
+            if self._fetch_due is not None:
+                wait = min(wait, max(1.0, self._fetch_due - context.clock()))
+            await self._wait(context, wait)
+
+    async def fetch(self, context: SourceContext) -> bool:
+        """Fetch an export from the portal when one is due; False when that failed."""
+        fetch = self._params.fetch
+        if self._portal is None or fetch is None:
+            return True
+        state = context.state_dir / FETCH_FILE
+        if self._fetch_due is None:
+            last = _load_last_fetch(state)
+            self._fetch_due = last + fetch.every_hours * 3600 if last else context.clock()
+        if context.clock() < self._fetch_due:
+            return True
+        now = context.clock()
+        try:
+            export = await self._portal.fetch()
+        except (PortalError, httpx2.HTTPError) as error:
+            message = f"fetching from the portal failed: {str(error) or type(error).__name__}"
+            context.problem(message)
+            logger.warning("%s", message)
+            self._fetch_due = now + fetch.retry_minutes * 60
+            return False
+        stamp = dt.datetime.fromtimestamp(now, dt.UTC).strftime("%Y-%m-%d_%H-%M-%S")
+        _write_private(self.inbox / f"euda-data-{stamp}.json", export)
+        _save_last_fetch(state, now)
+        self._fetch_due = now + fetch.every_hours * 3600
+        logger.info("fetched an export from the portal: %d bytes", len(export))
+        return True
 
     async def _wait(self, context: SourceContext, seconds: float) -> None:
         """Wait for the next scan, or until woken."""
@@ -426,6 +487,33 @@ def _save_names(path: Path, names: dict[tuple[int, int], str]) -> None:
     os.replace(temporary, path)
 
 
+def _write_private(path: Path, data: bytes) -> None:
+    """Write a file readable by its owner only, appearing whole under its name."""
+    temporary = path.with_name(f".{path.name}.part")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(data)
+    os.replace(temporary, path)
+
+
+def _load_last_fetch(path: Path) -> float | None:
+    """When the portal was last fetched from, or None before the first fetch."""
+    try:
+        return float(json.loads(path.read_text(encoding="utf-8"))["fetched_at"])
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        logger.error("cannot read %s (%s); fetching now", path, error)
+        return None
+
+
+def _save_last_fetch(path: Path, at: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps({"fetched_at": at}), encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def _move(path: Path, folder: str) -> None:
     """Move a file into a folder beside it, replacing an earlier file of the same name."""
     target = path.parent / folder
@@ -436,8 +524,17 @@ def _move(path: Path, folder: str) -> None:
 def build(
     params: VaillantExportParams, _client: httpx2.AsyncClient, _name: str = ""
 ) -> VaillantExportSource:
-    """A Vaillant export source from its validated parameters."""
-    return VaillantExportSource(params)
+    """A Vaillant export source from its validated parameters, with the portal account's
+    credentials read now when it fetches."""
+    portal = None
+    if params.fetch is not None:
+        portal = Portal(
+            read_secret(params.fetch.username_file),
+            read_secret(params.fetch.password_file),
+            realm=params.fetch.realm,
+            url=params.fetch.url,
+        )
+    return VaillantExportSource(params, portal)
 
 
 __all__ = ["VaillantExportParams", "VaillantExportSource", "build", "export_points"]
