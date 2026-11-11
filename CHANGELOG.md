@@ -8,9 +8,30 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 - A Vaillant source, through the myVAILLANT cloud: hourly energy per device, operation mode and
-  energy type, with progress per device, and the system's live state and current power, within
-  Vaillant's hourly request quota.
+  energy type, with progress per device, and the system's live state and current power, kept
+  within an hourly request budget that survives restarts.
+- A Vaillant data export source: imports the EU Data Act exports dropped into a folder or
+  uploaded on the status page (controller state, power, eBUS readings, operating statistics and
+  energy totals), and with `fetch` signs in to the portal itself and fetches the previous day's
+  export while it is missing.
+- Uploading files to a source from the status page.
+- A Modbus TCP source, read-only, driven by register maps; maps for AlphaESS hybrid inverters and
+  batteries and for Hoymiles DTU-Pro micro-inverter gateways. `skip_zero` leaves out zero
+  readings of running totals, and `as_float` keeps an unscaled number a float.
+- An AlphaESS cloud source, through AlphaESS's Open API: five-minute readings and daily totals,
+  with history.
+- A Zaptec charger source, read through a bridge that holds the Zaptec login: the charger's
+  state, completed sessions and their energy readings.
+- With a customer's login, the Frank Energie source also reads their account: the contract's
+  prices (electricity per market period, and gas), billed usage per hour, smart battery and smart
+  heating results, and the month's costs.
 - `progress_hours_by_source` in `[alerts]`: a stall threshold for particular sources.
+
+### Changed
+
+- The Frank Energie source reports a failed round and carries on, rather than restarting.
+- An error without a message, such as a timeout, is reported by its type.
+- The status page shows an error that a later success has cleared in grey.
 
 ## 0.2.0 — 2026-11-04
 
