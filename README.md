@@ -244,7 +244,8 @@ devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
 With `fetch`, the source also fetches an export from the portal itself every `every_hours` (24),
 signing in as the portal's web page does, its login form's proof-of-work check (Altcha) included,
 and saves it in `inbox` as `euda-data-<UTC time>.json`, readable by its owner only, for the next
-scan. Give it a myVAILLANT account of its own rather than the `vaillant` source's, so that a
+scan. The portal gives the previous day's records (by UTC), so a day whose fetch keeps failing
+for more than a day is missed; an account that sees no systems counts as a failed fetch. Give it a myVAILLANT account of its own rather than the `vaillant` source's, so that a
 locked account cannot stop both. A failed fetch is reported and tried again after
 `retry_minutes` (60); until a fetch succeeds the source's rounds don't count as successes, so
 its alerts fire. `realm` is the account's myVAILLANT realm, by country:

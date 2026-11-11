@@ -225,10 +225,11 @@ async def test_a_refused_login_gives_the_login_servers_message():
         await make_portal(fake, password="wrong").fetch()
 
 
-async def test_an_account_without_systems_gives_an_empty_export():
+async def test_an_account_without_systems_is_an_error():
     fake = FakePortal()
     fake.systems = []
-    assert json.loads(await make_portal(fake).fetch()) == []
+    with pytest.raises(PortalError, match="sees no systems"):
+        await make_portal(fake).fetch()
 
 
 async def test_a_form_without_a_widget_uses_the_usual_challenge_path():
@@ -379,6 +380,9 @@ def test_stream_rows_resolve():
     )
     assert action_result(body) == {"x": "two", "y": "$money", "z": "$9", "w": None, "n": [1, "two"]}
     assert action_result('0:"plain"') == "plain"
+    # Rows for the page itself are skipped.
+    page = '2:"$Sreact.fragment"\n3:I[1,["/a.js"],"x"]\n:HL["/a.css","style"]\n0:{"a":"$@1"}\n1:5'
+    assert action_result(page) == 5
     # A row that refers to itself is left as it is rather than followed for ever.
     assert action_result('0:{"a":"$@1"}\n1:["$1"]') == ["$1"]
 

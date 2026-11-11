@@ -9,7 +9,8 @@ which it offers as the download. :class:`Portal` does the same steps:
 2. the login form is fetched, its challenge solved (:func:`solve_altcha`) and the form submitted
    with the credentials; the login server redirects back, which leaves a session cookie;
 3. the data page's ``fetchStatistics`` action gives the system IDs, and ``fetchSystemData`` their
-   records, written as the download would be: a JSON array, indented by two spaces.
+   records, written as the download would be: a JSON array, indented by two spaces. The portal
+   gives the previous day's records (by UTC); an account that sees no systems is an error.
 
 The portal's actions are named in its scripts and their IDs change with every release of the
 portal, so they are looked up on each fetch. Every fetch uses a client of its own, so its cookies
@@ -39,7 +40,7 @@ TIMEOUT = 60.0
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) ingest-hub"
 SCRIPT = re.compile(r"/_next/static/chunks/[A-Za-z0-9_./~-]+\.js")
 ACTION = re.compile(r'createServerReference\)\("([0-9a-f]{40,})",[^)]*?"(\w+)"\)')
-ROW = re.compile(r"([0-9a-f]+):")
+ROW = re.compile(r"([0-9a-f]*):")
 
 
 class PortalError(Exception):
@@ -110,7 +111,8 @@ def action_result(body: str) -> Any:
 
     The stream is rows ``<hex id>:<JSON>``, or ``<hex id>:T<hex byte length>,<text>`` for long
     text; row 0 names the result (``{"a": "$@1"}``), and ``"$<id>"`` or ``"$@<id>"`` strings
-    stand for other rows, ``"$$..."`` for a string starting with ``$``.
+    stand for other rows, ``"$$..."`` for a string starting with ``$``. Rows for the page itself,
+    such as module imports (``I[...]``) and hints (``:HL[...]``, without an id), are skipped.
     """
     rows = _rows(body)
     if "0" not in rows:
@@ -133,7 +135,12 @@ def _rows(body: str) -> dict[str, Any]:
             raise PortalError("the portal's answer cannot be read")
         key = match.group(1)
         at += match.end()
-        if data[at : at + 1] == b"T":
+        tag = data[at : at + 1]
+        if tag.isalpha() and tag != b"T" or not key:
+            end = data.find(b"\n", at)
+            at = len(data) if end < 0 else end + 1
+            continue
+        if tag == b"T":
             comma = data.index(b",", at)
             length = int(data[at + 1 : comma], 16)
             rows[key] = data[comma + 1 : comma + 1 + length].decode()
@@ -226,9 +233,10 @@ class Portal:
             ids = stats.get("allSystemIds") if isinstance(stats, dict) else None
             if not isinstance(ids, list):
                 raise PortalError("the portal did not list the account's systems")
-            records = (
-                await self._call(client, data_page, actions, "fetchSystemData", ids) if ids else []
-            )
+            if not ids:
+                # An empty export would import nothing without a word.
+                raise PortalError("the portal account sees no systems")
+            records = await self._call(client, data_page, actions, "fetchSystemData", ids)
             if not isinstance(records, list):
                 raise PortalError("the portal's data is not a list of records")
             return json.dumps(records, indent=2, ensure_ascii=False).encode()
