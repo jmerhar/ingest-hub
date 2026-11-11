@@ -413,13 +413,16 @@ class FakeFetcher:
         return self.result
 
 
-def harness(tmp_path: Path, fetcher: FakeFetcher, now: float = 1_794_400_000.0):
+# 11 Nov 2026, 12:26:40 UTC: yesterday is 10 Nov.
+NOW = 1_794_400_000.0
+
+
+def harness(tmp_path: Path, fetcher: FakeFetcher, now: float = NOW):
     params = VaillantExportParams(
         inbox=tmp_path / "inbox",
         fetch={
             "username_file": tmp_path / "u",
             "password_file": tmp_path / "p",
-            "every_hours": 24,
             "retry_minutes": 30,
         },
     )
@@ -448,63 +451,111 @@ def harness(tmp_path: Path, fetcher: FakeFetcher, now: float = 1_794_400_000.0):
     return VaillantExportSource(params, fetcher), context, out
 
 
-EXPORT = json.dumps(
-    [
-        {
-            "topic": "gateway.hem.message.received",
-            "function": "status_message_mpc",
-            "timestamp": "2026-11-10T10:00:00.000+00:00",
-            "message_value": json.dumps(
-                {"device": {"coupler": 1, "address": 8}, "data": {"currentPower": 1200}}
-            ),
-        }
-    ]
-).encode()
+def export_of(day: str) -> bytes:
+    """An export with one power reading on ``day``."""
+    message = {
+        "mpc_device_status": [{"ebus_address": 8, "bus_coupler_address": 0, "current_power": 1200}]
+    }
+    return json.dumps(
+        [
+            {
+                "topic": "gateway.hem.message.received",
+                "function": "status_message_mpc",
+                "timestamp": f"{day}T10:00:00.000+00:00",
+                "message_value": json.dumps(message),
+            }
+        ]
+    ).encode()
 
 
-async def test_a_fetch_lands_in_the_inbox_privately_and_is_imported(tmp_path):
-    fetcher = FakeFetcher(EXPORT)
-    source, context, out = harness(tmp_path, fetcher)
+async def run_once(source, context) -> None:
     with pytest.raises(Stop):
         await source.run(context)
+
+
+async def test_a_missing_yesterday_is_fetched_privately_imported_and_remembered(tmp_path):
+    fetcher = FakeFetcher(export_of("2026-11-10"))
+    source, context, out = harness(tmp_path, fetcher)
+    await run_once(source, context)
     imported = list((tmp_path / "inbox" / "imported").iterdir())
     assert [p.name for p in imported] == ["euda-data-2026-11-11_12-26-40.json"]
     assert stat.S_IMODE(os.stat(imported[0]).st_mode) == 0o600
     assert out["successes"] == 1 and out["problems"] == []
-    assert json.loads((tmp_path / "state" / FETCH_FILE).read_text()) == {"fetched_at": out["now"]}
-    # The scan comes round first; the next fetch is a day away.
+    assert json.loads((tmp_path / "state" / FETCH_FILE).read_text()) == {"newest_day": "2026-11-10"}
+    # Yesterday is in, so no fetch is wanted: the scan sets the wait, and later rounds don't fetch.
     assert out["sleeps"] == [600.0]
+    out["now"] += 3 * 3600
+    await run_once(source, context)
+    assert fetcher.calls == 1
 
 
-async def test_the_next_fetch_waits_for_its_time_across_restarts(tmp_path):
-    fetcher = FakeFetcher(EXPORT)
+async def test_a_dropped_export_of_yesterday_means_no_fetch(tmp_path):
+    fetcher = FakeFetcher(export_of("2026-11-10"))
     source, context, out = harness(tmp_path, fetcher)
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state" / FETCH_FILE).write_text(
-        json.dumps({"fetched_at": out["now"] - 23.95 * 3600})
-    )
-    with pytest.raises(Stop):
-        await source.run(context)
-    assert fetcher.calls == 0
-    assert out["sleeps"] == [pytest.approx(180.0)]
+    (tmp_path / "inbox").mkdir()
+    (tmp_path / "inbox" / "mine.json").write_bytes(export_of("2026-11-10"))
+    await run_once(source, context)
+    assert fetcher.calls == 0 and out["successes"] == 1
+    # A restart knows the day from the state; the next day the 11th is missing and is fetched.
+    source, context, out = harness(tmp_path, fetcher, now=NOW + 86400)
+    await run_once(source, context)
+    assert fetcher.calls == 1
 
 
-async def test_a_failed_fetch_is_reported_tried_again_soon_and_not_a_success(tmp_path, caplog):
-    fetcher = FakeFetcher(PortalError("login refused: nope"))
-    source, context, out = harness(tmp_path, fetcher)
+async def test_without_state_the_newest_imported_file_says_how_far_it_is(tmp_path):
+    fetcher = FakeFetcher(export_of("2026-11-10"))
+    imported = tmp_path / "inbox" / "imported"
+    imported.mkdir(parents=True)
+    (imported / "yesterday.json").write_bytes(export_of("2026-11-10"))
+    os.utime(imported / "yesterday.json", (2, 2))
+    # More recently imported, but they say nothing about a day.
+    (imported / "broken.json").write_text("{not json")
+    (imported / "empty.json").write_text("[]")
     (tmp_path / "state").mkdir()
     (tmp_path / "state" / FETCH_FILE).write_text("{oops")
-    with pytest.raises(Stop):
-        await source.run(context)
+    source, context, _ = harness(tmp_path, fetcher)
+    await run_once(source, context)
+    assert fetcher.calls == 0
+    # What the files said is kept, so a restart reads the state rather than the files.
+    assert json.loads((tmp_path / "state" / FETCH_FILE).read_text()) == {"newest_day": "2026-11-10"}
+
+
+async def test_without_state_an_older_imported_file_means_a_fetch(tmp_path):
+    fetcher = FakeFetcher(export_of("2026-11-10"))
+    imported = tmp_path / "inbox" / "imported"
+    imported.mkdir(parents=True)
+    (imported / "old.json").write_bytes(export_of("2026-11-08"))
+    source, context, _ = harness(tmp_path, fetcher)
+    await run_once(source, context)
+    assert fetcher.calls == 1
+
+
+async def test_an_export_without_yesterday_is_tried_again_after_the_retry_time(tmp_path):
+    fetcher = FakeFetcher(export_of("2026-11-09"))
+    source, context, out = harness(tmp_path, fetcher)
+    await run_once(source, context)
+    assert fetcher.calls == 1 and out["successes"] == 1
+    # The retry is 30 minutes away, later than the 10-minute scan.
+    assert out["sleeps"] == [600.0]
+    out["now"] += 1799
+    await run_once(source, context)
+    assert fetcher.calls == 1 and out["sleeps"][-1] == pytest.approx(1.0)
+    out["now"] += 1
+    fetcher.result = export_of("2026-11-10")
+    await run_once(source, context)
+    assert fetcher.calls == 2
+    assert json.loads((tmp_path / "state" / FETCH_FILE).read_text()) == {"newest_day": "2026-11-10"}
+
+
+async def test_a_failed_fetch_is_reported_and_not_a_success(tmp_path):
+    fetcher = FakeFetcher(PortalError("login refused: nope"))
+    source, context, out = harness(tmp_path, fetcher)
+    await run_once(source, context)
     assert out["problems"] == ["fetching from the portal failed: login refused: nope"]
     assert out["successes"] == 0 and fetcher.calls == 1
-    assert "fetching now" in caplog.text
-    # The retry is 30 minutes away, after the 10-minute scan, so the scan sets the wait.
-    assert out["sleeps"] == [600.0]
-    fetcher.result = httpx2.ConnectError("")
     out["now"] += 1800
-    with pytest.raises(Stop):
-        await source.run(context)
+    fetcher.result = httpx2.ConnectError("")
+    await run_once(source, context)
     assert out["problems"][-1] == "fetching from the portal failed: ConnectError"
 
 

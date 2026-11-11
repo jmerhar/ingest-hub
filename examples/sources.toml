@@ -119,12 +119,12 @@ inbox = "/data/inbox/vaillant"
 # The vaillant source's device names, so both write to the same series.
 devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
 
-# Fetch an export from the portal daily as well, with a myVAILLANT account of its own.
+# Fetch the previous day's export from the portal as well, while it is missing, with a
+# myVAILLANT account of its own.
 # [sources.heating_export.params.fetch]
 # username_file = "/run/secrets/vaillant_export_username"
 # password_file = "/run/secrets/vaillant_export_password"
 # realm = "vaillant-netherlands-b2c"
-# every_hours = 24
 # retry_minutes = 60
 
 # A hybrid inverter and battery over Modbus TCP, here through a proxy that shares the device's

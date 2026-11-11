@@ -37,11 +37,13 @@ later export. Every scan imports each ``*.json`` file in ``inbox`` and moves it 
 Importing the same messages again writes the same points, so overlapping exports are harmless.
 No progress is published: exports arrive whenever someone drops one.
 
-With ``fetch`` set, the source also fetches an export from the portal itself (see
-``portal.py``) every ``every_hours``, with a portal account of its own, and saves it in the inbox
-as ``euda-data-<UTC time>.json``, readable by its owner only, where the next scan imports it. A
-failed fetch is reported, tried again after ``retry_minutes``, and keeps the round from counting
-as a success, so it raises the source's alerts while it lasts.
+With ``fetch`` set, the source also fetches exports from the portal itself (see ``portal.py``),
+with a portal account of its own. The portal gives the previous day (by UTC), so the source
+fetches while the newest day it has imported, from a fetch or a dropped file, is older than
+yesterday, at most every ``retry_minutes``, and saves the export in the inbox as
+``euda-data-<UTC time>.json``, readable by its owner only, where the scan imports it. A failed
+fetch is reported and keeps the round from counting as a success, so it raises the source's
+alerts while it lasts.
 """
 
 from __future__ import annotations
@@ -75,7 +77,7 @@ FAILED = "failed"
 TOPOLOGY = "hvac-topology"
 #: The device names learnt from topologies, in the source's state directory.
 NAMES_FILE = "vaillant-export-devices.json"
-#: When the portal was last fetched from, in the source's state directory.
+#: The newest day any imported export held, in the source's state directory.
 FETCH_FILE = "vaillant-export-fetch.json"
 #: eBUS values that mean "no reading", left out rather than stored.
 NO_VALUE = frozenset({"", "NO_VALUE"})
@@ -99,7 +101,7 @@ class ExportError(Exception):
 
 
 class FetchParams(BaseModel):
-    """Fetching exports from the portal: a portal account and how often."""
+    """Fetching exports from the portal: a portal account and how often to try."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -108,7 +110,7 @@ class FetchParams(BaseModel):
     #: The account's myVAILLANT realm, by country.
     realm: str = "vaillant-netherlands-b2c"
     url: str = PORTAL_URL
-    every_hours: float = Field(24, gt=0)
+    #: The least time between two fetches while yesterday is missing.
     retry_minutes: float = Field(60, gt=0)
 
 
@@ -375,51 +377,78 @@ class VaillantExportSource:
         self.inbox = params.inbox
         self._woken = asyncio.Event()
         self._portal = portal
-        #: When the next fetch is due; read from the state directory on the first round.
-        self._fetch_due: float | None = None
+        #: The newest day an imported export held; read from the state directory when needed.
+        self._newest: dt.date | None = None
+        self._newest_loaded = False
+        #: When a fetch may next be tried.
+        self._next_try = float("-inf")
 
     def wake(self) -> None:
         """Scan the inbox now rather than at the next scan, for a file just saved there."""
         self._woken.set()
 
     async def run(self, context: SourceContext) -> None:
-        """Fetch when due, scan the inbox every ``scan_minutes`` and whenever woken, for ever."""
+        """Scan the inbox every ``scan_minutes`` and whenever woken, fetching after the scan when
+        yesterday is still missing, for ever."""
         self.inbox.mkdir(parents=True, exist_ok=True)
         while True:
             self._woken.clear()
-            fetched = await self.fetch(context)
+            # A dropped file of yesterday is imported first, so it saves a fetch.
             await self.scan(context)
-            if fetched:
+            fetched = await self.fetch(context)
+            if fetched is not None:
+                await self.scan(context)
+            if fetched is not False:
                 context.succeeded()
             wait = self._params.scan_minutes * 60
-            if self._fetch_due is not None:
-                wait = min(wait, max(1.0, self._fetch_due - context.clock()))
+            if self._wants_fetch(context):
+                wait = min(wait, max(1.0, self._next_try - context.clock()))
             await self._wait(context, wait)
 
-    async def fetch(self, context: SourceContext) -> bool:
-        """Fetch an export from the portal when one is due; False when that failed."""
-        fetch = self._params.fetch
-        if self._portal is None or fetch is None:
-            return True
-        state = context.state_dir / FETCH_FILE
-        if self._fetch_due is None:
-            last = _load_last_fetch(state)
-            self._fetch_due = last + fetch.every_hours * 3600 if last else context.clock()
-        if context.clock() < self._fetch_due:
-            return True
+    def _newest_day(self, context: SourceContext) -> dt.date | None:
+        """The newest day an imported export held, read once from the state directory, or
+        from the newest imported file when the state has none."""
+        if not self._newest_loaded:
+            self._newest_loaded = True
+            self._newest = _load_newest(context.state_dir / FETCH_FILE)
+            if self._newest is None:
+                self._newest = _newest_imported(self.inbox / IMPORTED)
+                if self._newest is not None:
+                    _save_newest(context.state_dir / FETCH_FILE, self._newest)
+        return self._newest
+
+    def _note_day(self, context: SourceContext, day: dt.date | None) -> None:
+        """Remember an imported export's newest day, when it is newer than any before."""
+        newest = self._newest_day(context)
+        if day is not None and (newest is None or day > newest):
+            self._newest = day
+            _save_newest(context.state_dir / FETCH_FILE, day)
+
+    def _wants_fetch(self, context: SourceContext) -> bool:
+        """Whether the portal should be asked: fetching is set up and yesterday is missing."""
+        if self._portal is None or self._params.fetch is None:
+            return False
+        yesterday = dt.datetime.fromtimestamp(context.clock(), dt.UTC).date() - dt.timedelta(days=1)
+        newest = self._newest_day(context)
+        return newest is None or newest < yesterday
+
+    async def fetch(self, context: SourceContext) -> bool | None:
+        """Fetch an export from the portal when yesterday is missing and a try is due: True when
+        one was saved in the inbox, False when the fetch failed, None when none was due."""
+        if not self._wants_fetch(context) or context.clock() < self._next_try:
+            return None
+        assert self._portal is not None and self._params.fetch is not None
         now = context.clock()
+        self._next_try = now + self._params.fetch.retry_minutes * 60
         try:
             export = await self._portal.fetch()
         except (PortalError, httpx2.HTTPError) as error:
             message = f"fetching from the portal failed: {str(error) or type(error).__name__}"
             context.problem(message)
             logger.warning("%s", message)
-            self._fetch_due = now + fetch.retry_minutes * 60
             return False
         stamp = dt.datetime.fromtimestamp(now, dt.UTC).strftime("%Y-%m-%d_%H-%M-%S")
         _write_private(self.inbox / f"euda-data-{stamp}.json", export)
-        _save_last_fetch(state, now)
-        self._fetch_due = now + fetch.every_hours * 3600
         logger.info("fetched an export from the portal: %d bytes", len(export))
         return True
 
@@ -458,6 +487,9 @@ class VaillantExportSource:
             if names != known:
                 _save_names(names_path, names)
             _move(path, IMPORTED)
+            if points:
+                newest = max(p.timestamp for p in points) // 1000
+                self._note_day(context, dt.datetime.fromtimestamp(newest, dt.UTC).date())
             summary = ", ".join(f"{n} {table}" for table, n in sorted(counts.items())) or "nothing"
             logger.info("imported %s: %s", path.name, summary)
 
@@ -496,21 +528,36 @@ def _write_private(path: Path, data: bytes) -> None:
     os.replace(temporary, path)
 
 
-def _load_last_fetch(path: Path) -> float | None:
-    """When the portal was last fetched from, or None before the first fetch."""
+def _load_newest(path: Path) -> dt.date | None:
+    """The newest imported day kept in the state directory, or None."""
     try:
-        return float(json.loads(path.read_text(encoding="utf-8"))["fetched_at"])
+        return dt.date.fromisoformat(json.loads(path.read_text(encoding="utf-8"))["newest_day"])
     except FileNotFoundError:
         return None
     except (OSError, ValueError, KeyError, TypeError) as error:
-        logger.error("cannot read %s (%s); fetching now", path, error)
+        logger.error("cannot read %s (%s); looking at the imported files", path, error)
         return None
 
 
-def _save_last_fetch(path: Path, at: float) -> None:
+def _newest_imported(folder: Path) -> dt.date | None:
+    """The newest day in the most recently imported file, or None when there is none."""
+    files = (
+        sorted(folder.glob("*.json"), key=lambda f: f.stat().st_mtime) if folder.is_dir() else []
+    )
+    for path in reversed(files):
+        try:
+            stamps = [parsed[2] for entry in read_entries(path) if (parsed := parse_entry(entry))]
+        except ExportError:
+            continue
+        if stamps:
+            return dt.datetime.fromtimestamp(max(stamps) // 1000, dt.UTC).date()
+    return None
+
+
+def _save_newest(path: Path, day: dt.date) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps({"fetched_at": at}), encoding="utf-8")
+    temporary.write_text(json.dumps({"newest_day": day.isoformat()}), encoding="utf-8")
     os.replace(temporary, path)
 
 
