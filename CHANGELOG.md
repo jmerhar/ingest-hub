@@ -3,7 +3,7 @@
 Notable changes to ingest-hub. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.3.0 — 2026-11-11
 
 ### Added
 

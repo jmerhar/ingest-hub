@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ingest-hub"
-version = "0.2.0"
+version = "0.3.0"
 description = "Config-driven ingest service: pluggable source adapters writing to time-series sinks"
 requires-python = ">=3.14"
 license = "GPL-3.0-or-later"
