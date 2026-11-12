@@ -243,16 +243,15 @@ devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
 
 With `fetch`, the source also fetches exports from the portal itself, signing in as the portal's
 web page does, its login form's proof-of-work check (Altcha) included. The portal gives the
-previous day's records (by UTC), so the source fetches only while the newest day it has imported
-completely, from a fetch or a dropped file, is older than yesterday (early in the day the portal
-gives the day before together with part of yesterday, so the newest day of a multi-day export
-doesn't count): after each scan, at most every
-`retry_minutes` (60), until yesterday is in. It saves an export in `inbox` as
-`euda-data-<UTC time>.json`, readable by its owner only, and imports it. A day not imported by
-the end of the next is missed. A failed fetch, including an account that sees no systems, is
-reported and keeps the round from counting as a success, so the source's alerts fire. Give it a
-myVAILLANT account of its own rather than the `vaillant` source's, so that a locked account
-cannot stop both. `realm` is the account's myVAILLANT realm, by country:
+previous day's records (by UTC), adding them in stages through the following morning, so a day
+counts as imported once an export, fetched or dropped, holds both eBUS readings and controller
+state from its last hour. While yesterday isn't, the source fetches from `not_before` (12:00, in
+`timezone`, UTC by default) each day, at most every `retry_minutes` (60), saves the export in
+`inbox` as `euda-data-<UTC time>.json`, readable by its owner only, and imports it. A day not
+complete by the end of the next is missed. A failed fetch, including an account that sees no
+systems, is reported and keeps the round from counting as a success, so the source's alerts
+fire. Give it a myVAILLANT account of its own rather than the `vaillant` source's, so that a
+locked account cannot stop both. `realm` is the account's myVAILLANT realm, by country:
 
 ```toml
 [sources.heating_export.params.fetch]
@@ -260,6 +259,8 @@ username_file = "/run/secrets/vaillant_export_username"
 password_file = "/run/secrets/vaillant_export_password"
 # realm = "vaillant-netherlands-b2c"
 # retry_minutes = 60
+# not_before = 12:00
+# timezone = "Europe/Amsterdam"
 ```
 
 ### Modbus

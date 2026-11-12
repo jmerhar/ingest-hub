@@ -40,9 +40,9 @@ No progress is published: exports arrive whenever someone drops one.
 With ``fetch`` set, the source also fetches exports from the portal itself (see ``portal.py``),
 with a portal account of its own. The portal gives the previous day (by UTC), so the source
 fetches while the newest day it has imported completely (see :func:`complete_day`), from a fetch
-or a dropped file, is older than yesterday, at most every ``retry_minutes``, and saves the
-export in the inbox as ``euda-data-<UTC time>.json``, readable by its owner only, where the scan
-imports it. A failed
+or a dropped file, is older than yesterday: from ``not_before`` (noon, in ``timezone``) each day,
+at most every ``retry_minutes``. It saves the export in the inbox as
+``euda-data-<UTC time>.json``, readable by its owner only, where the scan imports it. A failed
 fetch is reported and keeps the round from counting as a success, so it raises the source's
 alerts while it lasts.
 """
@@ -58,12 +58,14 @@ import os
 import re
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx2
 from jigkit.sinks import FieldValue, Point, Precision
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ingest_hub.adapters.vaillant.portal import PORTAL_URL, Portal, PortalError
 from ingest_hub.collect import SourceContext
@@ -80,6 +82,8 @@ TOPOLOGY = "hvac-topology"
 NAMES_FILE = "vaillant-export-devices.json"
 #: The newest day any imported export held completely, in the source's state directory.
 FETCH_FILE = "vaillant-export-fetch.json"
+#: The topics whose messages from a day's last hour mark the day as complete in an export.
+COMPLETE_TOPICS = frozenset({"ebus.responses.interpreted", "system-control.state"})
 #: eBUS values that mean "no reading", left out rather than stored.
 NO_VALUE = frozenset({"", "NO_VALUE"})
 TRUE = frozenset({"on", "true"})
@@ -113,6 +117,19 @@ class FetchParams(BaseModel):
     url: str = PORTAL_URL
     #: The least time between two fetches while yesterday is missing.
     retry_minutes: float = Field(60, gt=0)
+    #: The time of day, in ``timezone``, before which no fetch is tried: the portal adds a
+    #: day's messages through the morning after it.
+    not_before: dt.time = dt.time(12, 0)
+    timezone: str = "UTC"
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError(f"unknown time zone {value!r}") from error
+        return value
 
 
 class VaillantExportParams(BaseModel):
@@ -338,10 +355,28 @@ class Points:
             yield self._point("energy_total", tags, ms, {"wh": float(value)})
 
 
+@dataclass
+class Export:
+    """What an export file carries: its points, how many went to each table, and the newest day
+    it holds completely (see :func:`complete_day`)."""
+
+    points: list[Point]
+    counts: Counter[str]
+    complete_day: dt.date | None
+
+
 def export_points(
     path: Path, params: VaillantExportParams, names: dict[tuple[int, int], str] | None = None
 ) -> tuple[list[Point], Counter[str]]:
-    """Every point an export file carries, and how many went to each table.
+    """Every point an export file carries, and how many went to each table."""
+    export = read_export(path, params, names)
+    return export.points, export.counts
+
+
+def read_export(
+    path: Path, params: VaillantExportParams, names: dict[tuple[int, int], str] | None = None
+) -> Export:
+    """Everything an export file carries.
 
     ``names`` are device names already learnt, by address; any the export's topology gives are
     added to it in place.
@@ -356,6 +391,7 @@ def export_points(
         if topology and (parsed := parse_entry(entry)):
             builder.learn_topology(parsed[3])
     points: list[Point] = []
+    marks: list[tuple[str, int]] = []
     skipped = 0
     for entry in entries:
         parsed = parse_entry(entry)
@@ -363,9 +399,11 @@ def export_points(
             skipped += 1
         else:
             points.extend(builder.build(*parsed))
+            if parsed[0] in COMPLETE_TOPICS:
+                marks.append((parsed[0], parsed[2]))
     if skipped:
         logger.warning("%s: skipped %d unreadable message(s)", path.name, skipped)
-    return points, builder.counts
+    return Export(points, builder.counts, complete_day(marks))
 
 
 class VaillantExportSource:
@@ -440,6 +478,13 @@ class VaillantExportSource:
             return None
         assert self._portal is not None and self._params.fetch is not None
         now = context.clock()
+        zone = ZoneInfo(self._params.fetch.timezone)
+        local = dt.datetime.fromtimestamp(now, zone)
+        if local.time() < self._params.fetch.not_before:
+            self._next_try = dt.datetime.combine(
+                local.date(), self._params.fetch.not_before, zone
+            ).timestamp()
+            return None
         self._next_try = now + self._params.fetch.retry_minutes * 60
         try:
             export = await self._portal.fetch()
@@ -473,7 +518,8 @@ class VaillantExportSource:
             names = _load_names(names_path)
             known = dict(names)
             try:
-                points, counts = export_points(path, self._params, names)
+                export = read_export(path, self._params, names)
+                points, counts = export.points, export.counts
             except ExportError as error:
                 context.problem(f"cannot read export {error}; moved to {FAILED}/")
                 logger.error("cannot read export %s; moving it to %s/", error, FAILED)
@@ -488,7 +534,7 @@ class VaillantExportSource:
             if names != known:
                 _save_names(names_path, names)
             _move(path, IMPORTED)
-            self._note_day(context, complete_day(p.timestamp for p in points))
+            self._note_day(context, export.complete_day)
             summary = ", ".join(f"{n} {table}" for table, n in sorted(counts.items())) or "nothing"
             logger.info("imported %s: %s", path.name, summary)
 
@@ -539,32 +585,38 @@ def _load_newest(path: Path) -> dt.date | None:
 
 
 def _newest_imported(folder: Path) -> dt.date | None:
-    """The newest day in the most recently imported file, or None when there is none."""
+    """The newest complete day in the most recently imported file that has one, or None."""
     files = (
         sorted(folder.glob("*.json"), key=lambda f: f.stat().st_mtime) if folder.is_dir() else []
     )
     for path in reversed(files):
         try:
-            stamps = [parsed[2] for entry in read_entries(path) if (parsed := parse_entry(entry))]
+            day = complete_day(
+                (parsed[0], parsed[2])
+                for entry in read_entries(path)
+                if (parsed := parse_entry(entry))
+            )
         except ExportError:
             continue
-        if stamps:
-            return complete_day(stamps)
+        if day:
+            return day
     return None
 
 
-def complete_day(stamps_ms: Iterable[int]) -> dt.date | None:
-    """The newest day an export holds completely, from its timestamps in milliseconds.
+def complete_day(entries: Iterable[tuple[str, int]]) -> dt.date | None:
+    """The newest day an export holds completely, from its messages as (topic, milliseconds).
 
-    The portal builds a day's export in stages: for a while after midnight it gives the day
-    before together with what it has of yesterday so far, and later yesterday alone. So the
-    newest day of an export spanning several days counts as incomplete, and the day before it is
-    the newest complete one; an export of a single day holds that day whole. None for no
-    timestamps."""
-    days = sorted({dt.datetime.fromtimestamp(ms // 1000, dt.UTC).date() for ms in stamps_ms})
-    if not days:
-        return None
-    return days[-1] if len(days) == 1 else days[-2]
+    eBUS readings and the controller's state arrive every few minutes for as long as the system
+    is online, and the portal adds a day's messages in stages, so a day counts as complete when
+    the export holds both from the day's last hour (UTC). None when no day does."""
+    last_hour: dict[dt.date, set[str]] = {}
+    for topic, ms in entries:
+        if topic in COMPLETE_TOPICS:
+            moment = dt.datetime.fromtimestamp(ms / 1000, dt.UTC)
+            if moment.hour == 23:
+                last_hour.setdefault(moment.date(), set()).add(topic)
+    days = [day for day, topics in last_hour.items() if topics >= COMPLETE_TOPICS]
+    return max(days) if days else None
 
 
 def _save_newest(path: Path, day: dt.date) -> None:

@@ -418,13 +418,14 @@ class FakeFetcher:
 NOW = 1_794_400_000.0
 
 
-def harness(tmp_path: Path, fetcher: FakeFetcher, now: float = NOW):
+def harness(tmp_path: Path, fetcher: FakeFetcher, now: float = NOW, not_before: str = "00:00"):
     params = VaillantExportParams(
         inbox=tmp_path / "inbox",
         fetch={
             "username_file": tmp_path / "u",
             "password_file": tmp_path / "p",
             "retry_minutes": 30,
+            "not_before": not_before,
         },
     )
     out = {"batches": [], "problems": [], "successes": 0, "sleeps": [], "now": now}
@@ -452,21 +453,36 @@ def harness(tmp_path: Path, fetcher: FakeFetcher, now: float = NOW):
     return VaillantExportSource(params, fetcher), context, out
 
 
-def export_of(day: str) -> bytes:
-    """An export with one power reading on ``day``."""
-    message = {
+def export_of(day: str, complete: bool = True) -> bytes:
+    """An export of ``day``: a power reading at 10:00, and when ``complete`` an eBUS reading and
+    a controller state from its last hour, as a finished day has."""
+    power = {
         "mpc_device_status": [{"ebus_address": 8, "bus_coupler_address": 0, "current_power": 1200}]
     }
-    return json.dumps(
-        [
+    entries = [
+        {
+            "topic": "gateway.hem.message.received",
+            "function": "status_message_mpc",
+            "timestamp": f"{day}T10:00:00.000+00:00",
+            "message_value": json.dumps(power),
+        }
+    ]
+    if complete:
+        entries += [
             {
-                "topic": "gateway.hem.message.received",
-                "function": "status_message_mpc",
-                "timestamp": f"{day}T10:00:00.000+00:00",
-                "message_value": json.dumps(message),
-            }
+                "topic": "ebus.responses.interpreted",
+                "function": None,
+                "timestamp": f"{day}T23:57:04.000+00:00",
+                "message_value": json.dumps({"dataPoint": []}),
+            },
+            {
+                "topic": "system-control.state",
+                "function": None,
+                "timestamp": f"{day}T23:59:21.000+00:00",
+                "message_value": json.dumps({"data": {}}),
+            },
         ]
-    ).encode()
+    return json.dumps(entries).encode()
 
 
 async def run_once(source, context) -> None:
@@ -599,30 +615,88 @@ async def test_an_empty_error_element_gives_way_to_the_page_alert():
 
 
 def two_days(first: str, second: str) -> bytes:
-    """An export holding a reading on each of two days, as the portal gives early in the day."""
-    return json.dumps(json.loads(export_of(first)) + json.loads(export_of(second))).encode()
+    """The day before whole and yesterday in part, as the portal gives early in the day."""
+    return json.dumps(
+        json.loads(export_of(first)) + json.loads(export_of(second, complete=False))
+    ).encode()
 
 
-async def test_an_export_still_building_yesterday_counts_only_the_day_before(tmp_path):
-    # Early in the day the portal gives the day before yesterday whole and yesterday in part.
+async def test_an_export_still_building_yesterday_counts_only_the_finished_day(tmp_path):
     fetcher = FakeFetcher(two_days("2026-11-09", "2026-11-10"))
     source, context, out = harness(tmp_path, fetcher)
     await run_once(source, context)
     assert json.loads((tmp_path / "state" / FETCH_FILE).read_text()) == {"newest_day": "2026-11-09"}
-    # So yesterday is still wanted; once the portal gives it alone, it counts.
+    # A single-day export that is still incomplete doesn't count either.
+    fetcher.result = export_of("2026-11-10", complete=False)
+    out["now"] += 1800
+    await run_once(source, context)
+    assert json.loads((tmp_path / "state" / FETCH_FILE).read_text()) == {"newest_day": "2026-11-09"}
+    # Once the portal has the whole day, it counts.
     fetcher.result = export_of("2026-11-10")
     out["now"] += 1800
     await run_once(source, context)
-    assert fetcher.calls == 2
+    assert fetcher.calls == 3
     assert json.loads((tmp_path / "state" / FETCH_FILE).read_text()) == {"newest_day": "2026-11-10"}
 
 
-def test_complete_day():
-    def ms(day: str) -> int:
-        return int(dt.datetime.fromisoformat(f"{day}T12:00:00+00:00").timestamp() * 1000)
-
-    assert export.complete_day([]) is None
-    assert export.complete_day([ms("2026-11-10")]) == dt.date(2026, 11, 10)
-    assert export.complete_day([ms("2026-11-08"), ms("2026-11-10"), ms("2026-11-09")]) == dt.date(
-        2026, 11, 9
+async def test_no_fetch_is_tried_before_noon(tmp_path):
+    fetcher = FakeFetcher(export_of("2026-11-10"))
+    # 11 Nov, 09:00 UTC; the harness's noon is UTC.
+    source, context, out = harness(
+        tmp_path, fetcher, now=NOW - 3 * 3600 - 26 * 60 - 40, not_before="12:00"
     )
+    await run_once(source, context)
+    assert fetcher.calls == 0
+    # It waits for noon rather than the next scan when noon comes first.
+    out["now"] += 2 * 3600 + 55 * 60  # 11:55
+    await run_once(source, context)
+    assert fetcher.calls == 0 and out["sleeps"][-1] == pytest.approx(300.0)
+    out["now"] += 300
+    await run_once(source, context)
+    assert fetcher.calls == 1
+
+
+def test_complete_day():
+    def at(day: str, time: str) -> int:
+        return int(dt.datetime.fromisoformat(f"{day}T{time}+00:00").timestamp() * 1000)
+
+    ebus, state, power = "ebus.responses.interpreted", "system-control.state", "gateway.x"
+    assert export.complete_day([]) is None
+    # Both kinds from the last hour make a day complete; the newest such day counts.
+    assert export.complete_day(
+        [
+            (ebus, at("2026-11-09", "23:10:00")),
+            (state, at("2026-11-09", "23:50:00")),
+            (ebus, at("2026-11-10", "23:01:00")),
+            (state, at("2026-11-10", "23:59:00")),
+        ]
+    ) == dt.date(2026, 11, 10)
+    # One kind missing, or only earlier in the day, or another topic: not complete.
+    assert export.complete_day([(ebus, at("2026-11-10", "23:30:00"))]) is None
+    assert (
+        export.complete_day(
+            [(ebus, at("2026-11-10", "22:59:00")), (state, at("2026-11-10", "23:30:00"))]
+        )
+        is None
+    )
+    assert (
+        export.complete_day(
+            [(power, at("2026-11-10", "23:30:00")), (state, at("2026-11-10", "23:30:00"))]
+        )
+        is None
+    )
+
+
+def test_the_fetch_time_zone_must_exist(tmp_path):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="unknown time zone"):
+        VaillantExportParams(
+            inbox=tmp_path,
+            fetch={"username_file": "/u", "password_file": "/p", "timezone": "Mars/Olympus"},
+        )
+    params = VaillantExportParams(
+        inbox=tmp_path,
+        fetch={"username_file": "/u", "password_file": "/p", "timezone": "Europe/Amsterdam"},
+    )
+    assert params.fetch.timezone == "Europe/Amsterdam"

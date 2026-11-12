@@ -126,6 +126,8 @@ devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
 # password_file = "/run/secrets/vaillant_export_password"
 # realm = "vaillant-netherlands-b2c"
 # retry_minutes = 60
+# not_before = 12:00              # no fetch before this time of day, in timezone
+# timezone = "Europe/Amsterdam"
 
 # A hybrid inverter and battery over Modbus TCP, here through a proxy that shares the device's
 # single connection with another controller.
