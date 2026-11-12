@@ -62,7 +62,7 @@ STATE_FILE = "frank-account.json"
 SPACING = 0.4
 TIMEOUT = 30.0
 #: Days after which a day Frank still reports incomplete is taken as it is.
-GIVE_UP_DAYS = 30
+GIVE_UP_DAYS = 7
 #: Days after which a battery or heating day counts as final whatever its status says.
 SETTLED_DAYS = 3
 #: Days of history each round reads at most per kind, so a long backfill is spread over rounds.
