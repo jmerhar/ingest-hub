@@ -39,9 +39,10 @@ No progress is published: exports arrive whenever someone drops one.
 
 With ``fetch`` set, the source also fetches exports from the portal itself (see ``portal.py``),
 with a portal account of its own. The portal gives the previous day (by UTC), so the source
-fetches while the newest day it has imported, from a fetch or a dropped file, is older than
-yesterday, at most every ``retry_minutes``, and saves the export in the inbox as
-``euda-data-<UTC time>.json``, readable by its owner only, where the scan imports it. A failed
+fetches while the newest day it has imported completely (see :func:`complete_day`), from a fetch
+or a dropped file, is older than yesterday, at most every ``retry_minutes``, and saves the
+export in the inbox as ``euda-data-<UTC time>.json``, readable by its owner only, where the scan
+imports it. A failed
 fetch is reported and keeps the round from counting as a success, so it raises the source's
 alerts while it lasts.
 """
@@ -77,7 +78,7 @@ FAILED = "failed"
 TOPOLOGY = "hvac-topology"
 #: The device names learnt from topologies, in the source's state directory.
 NAMES_FILE = "vaillant-export-devices.json"
-#: The newest day any imported export held, in the source's state directory.
+#: The newest day any imported export held completely, in the source's state directory.
 FETCH_FILE = "vaillant-export-fetch.json"
 #: eBUS values that mean "no reading", left out rather than stored.
 NO_VALUE = frozenset({"", "NO_VALUE"})
@@ -487,9 +488,7 @@ class VaillantExportSource:
             if names != known:
                 _save_names(names_path, names)
             _move(path, IMPORTED)
-            if points:
-                newest = max(p.timestamp for p in points) // 1000
-                self._note_day(context, dt.datetime.fromtimestamp(newest, dt.UTC).date())
+            self._note_day(context, complete_day(p.timestamp for p in points))
             summary = ", ".join(f"{n} {table}" for table, n in sorted(counts.items())) or "nothing"
             logger.info("imported %s: %s", path.name, summary)
 
@@ -550,8 +549,22 @@ def _newest_imported(folder: Path) -> dt.date | None:
         except ExportError:
             continue
         if stamps:
-            return dt.datetime.fromtimestamp(max(stamps) // 1000, dt.UTC).date()
+            return complete_day(stamps)
     return None
+
+
+def complete_day(stamps_ms: Iterable[int]) -> dt.date | None:
+    """The newest day an export holds completely, from its timestamps in milliseconds.
+
+    The portal builds a day's export in stages: for a while after midnight it gives the day
+    before together with what it has of yesterday so far, and later yesterday alone. So the
+    newest day of an export spanning several days counts as incomplete, and the day before it is
+    the newest complete one; an export of a single day holds that day whole. None for no
+    timestamps."""
+    days = sorted({dt.datetime.fromtimestamp(ms // 1000, dt.UTC).date() for ms in stamps_ms})
+    if not days:
+        return None
+    return days[-1] if len(days) == 1 else days[-2]
 
 
 def _save_newest(path: Path, day: dt.date) -> None:

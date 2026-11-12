@@ -4,6 +4,7 @@ server, with a synthetic account."""
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import hashlib
 import json
 import os
@@ -595,3 +596,33 @@ async def test_an_empty_error_element_gives_way_to_the_page_alert():
     )
     with pytest.raises(PortalError, match="login refused: Account locked"):
         await make_portal(fake, password="wrong").fetch()
+
+
+def two_days(first: str, second: str) -> bytes:
+    """An export holding a reading on each of two days, as the portal gives early in the day."""
+    return json.dumps(json.loads(export_of(first)) + json.loads(export_of(second))).encode()
+
+
+async def test_an_export_still_building_yesterday_counts_only_the_day_before(tmp_path):
+    # Early in the day the portal gives the day before yesterday whole and yesterday in part.
+    fetcher = FakeFetcher(two_days("2026-11-09", "2026-11-10"))
+    source, context, out = harness(tmp_path, fetcher)
+    await run_once(source, context)
+    assert json.loads((tmp_path / "state" / FETCH_FILE).read_text()) == {"newest_day": "2026-11-09"}
+    # So yesterday is still wanted; once the portal gives it alone, it counts.
+    fetcher.result = export_of("2026-11-10")
+    out["now"] += 1800
+    await run_once(source, context)
+    assert fetcher.calls == 2
+    assert json.loads((tmp_path / "state" / FETCH_FILE).read_text()) == {"newest_day": "2026-11-10"}
+
+
+def test_complete_day():
+    def ms(day: str) -> int:
+        return int(dt.datetime.fromisoformat(f"{day}T12:00:00+00:00").timestamp() * 1000)
+
+    assert export.complete_day([]) is None
+    assert export.complete_day([ms("2026-11-10")]) == dt.date(2026, 11, 10)
+    assert export.complete_day([ms("2026-11-08"), ms("2026-11-10"), ms("2026-11-09")]) == dt.date(
+        2026, 11, 9
+    )

@@ -243,8 +243,10 @@ devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
 
 With `fetch`, the source also fetches exports from the portal itself, signing in as the portal's
 web page does, its login form's proof-of-work check (Altcha) included. The portal gives the
-previous day's records (by UTC), so the source fetches only while the newest day it has imported,
-from a fetch or a dropped file, is older than yesterday: after each scan, at most every
+previous day's records (by UTC), so the source fetches only while the newest day it has imported
+completely, from a fetch or a dropped file, is older than yesterday (early in the day the portal
+gives the day before together with part of yesterday, so the newest day of a multi-day export
+doesn't count): after each scan, at most every
 `retry_minutes` (60), until yesterday is in. It saves an export in `inbox` as
 `euda-data-<UTC time>.json`, readable by its owner only, and imports it. A day not imported by
 the end of the next is missed. A failed fetch, including an account that sees no systems, is
