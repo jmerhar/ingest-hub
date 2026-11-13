@@ -57,11 +57,9 @@ the state directory to import everything again.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import datetime as dt
 import json
 import logging
-import os
 import re
 import zipfile
 import zlib
@@ -76,6 +74,8 @@ import httpx2
 from jigkit.sinks import FieldValue, Point, Precision
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ingest_hub.adapters.inbox import FAILED, IMPORTED, move_aside, wait_or_wake, write_json
+from ingest_hub.adapters.night import night_of
 from ingest_hub.adapters.resmed.edf import Edf, EdfError, read_edf
 from ingest_hub.collect import SourceContext
 
@@ -83,8 +83,6 @@ logger = logging.getLogger(__name__)
 
 #: Points per batch handed to delivery.
 BATCH = 5000
-IMPORTED = "imported"
-FAILED = "failed"
 #: The fingerprints of the files imported so far, in the source's state directory.
 STATE_FILE = "resmed-imported.json"
 #: The largest card file read from a zip; nothing the source imports comes near it.
@@ -110,8 +108,6 @@ SESSION_SKIPPED = frozenset({"Crc16", "EDF Annotations"})
 NOT_EVENTS = frozenset({"recording starts"})
 #: The table each kind of session file is written to.
 SESSION_TABLES = {"EVE": "event", "CSL": "event", "PLD": "detail", "SA2": "oximetry"}
-#: ResMed's day starts at noon: a session belongs to the night of the noon before it.
-DAY_START = dt.timedelta(hours=12)
 
 
 class CardError(Exception):
@@ -304,11 +300,6 @@ def card_offset(raw: bytes) -> str | None:
     return None
 
 
-def night_of(local: dt.datetime) -> str:
-    """The night a moment on the device's clock belongs to: the date of the noon before it."""
-    return (local - DAY_START).date().isoformat()
-
-
 class Points:
     """Turns a card's files into points."""
 
@@ -448,19 +439,7 @@ class ResmedSource:
             self._woken.clear()
             if await self.scan(context):
                 context.succeeded()
-            await self._wait(context, self._params.scan_minutes * 60)
-
-    async def _wait(self, context: SourceContext, seconds: float) -> None:
-        """Wait for the next scan, or until woken."""
-        timer = asyncio.ensure_future(context.sleep(seconds))
-        woken = asyncio.ensure_future(self._woken.wait())
-        done, pending = await asyncio.wait({timer, woken}, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        for task in done:
-            task.result()
+            await wait_or_wake(context, self._woken, self._params.scan_minutes * 60)
 
     async def scan(self, context: SourceContext) -> bool:
         """Import every zip waiting in the inbox, oldest name first, then the card folder;
@@ -471,7 +450,7 @@ class ResmedSource:
             except CardError as error:
                 context.problem(f"cannot read card {error}; moved to {FAILED}/")
                 logger.error("cannot read card %s; moving it to %s/", error, FAILED)
-                _move(path, FAILED)
+                move_aside(path, FAILED)
                 continue
             try:
                 imported = await self.import_card(context, card)
@@ -480,7 +459,7 @@ class ResmedSource:
             if not imported:
                 context.problem(f"{path.name}: a batch was refused; the file stays in the inbox")
                 return False
-            _move(path, IMPORTED)
+            move_aside(path, IMPORTED)
         folder = self._params.card
         if folder is not None and folder.is_dir():
             card = await asyncio.to_thread(FolderCard, folder)
@@ -576,18 +555,7 @@ def _load_state(path: Path) -> State:
 
 def _save_state(path: Path, state: State) -> None:
     """Keep the state, written atomically."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    data = {"files": dict(sorted(state.files.items())), "offset": state.offset}
-    temporary.write_text(json.dumps(data), encoding="utf-8")
-    os.replace(temporary, path)
-
-
-def _move(path: Path, folder: str) -> None:
-    """Move a file into a folder beside it, replacing an earlier file of the same name."""
-    target = path.parent / folder
-    target.mkdir(exist_ok=True)
-    os.replace(path, target / path.name)
+    write_json(path, {"files": dict(sorted(state.files.items())), "offset": state.offset})
 
 
 def build(params: ResmedParams, _client: httpx2.AsyncClient, _name: str = "") -> ResmedSource:
@@ -595,4 +563,4 @@ def build(params: ResmedParams, _client: httpx2.AsyncClient, _name: str = "") ->
     return ResmedSource(params)
 
 
-__all__ = ["ResmedParams", "ResmedSource", "build", "field_name", "night_of", "parse_zone"]
+__all__ = ["ResmedParams", "ResmedSource", "build", "field_name", "parse_zone"]

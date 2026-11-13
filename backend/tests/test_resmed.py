@@ -13,6 +13,8 @@ from jigkit.sinks import Point
 from pydantic import ValidationError
 
 from ingest_hub.adapters import ADAPTERS, resmed
+from ingest_hub.adapters.inbox import wait_or_wake
+from ingest_hub.adapters.night import night_of
 from ingest_hub.adapters.resmed import (
     STATE_FILE,
     ResmedParams,
@@ -21,7 +23,6 @@ from ingest_hub.adapters.resmed import (
     card_kind,
     card_offset,
     field_name,
-    night_of,
     parse_zone,
 )
 from ingest_hub.adapters.resmed.edf import read_edf
@@ -430,7 +431,7 @@ async def test_the_source_scans_every_scan_minutes_and_when_woken(tmp_path):
 
     harness.context.sleep = wait_forever
     harness.source.wake()
-    await harness.source._wait(harness.context, 300)  # returns at once: woken
+    await wait_or_wake(harness.context, harness.source._woken, 300)  # returns at once: woken
 
 
 async def test_a_refused_round_is_not_a_success(tmp_path):

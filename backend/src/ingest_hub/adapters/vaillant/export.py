@@ -50,7 +50,6 @@ alerts while it lasts.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import datetime as dt
 import json
 import logging
@@ -67,6 +66,7 @@ import httpx2
 from jigkit.sinks import FieldValue, Point, Precision
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ingest_hub.adapters.inbox import FAILED, IMPORTED, move_aside, wait_or_wake, write_json
 from ingest_hub.adapters.vaillant.portal import PORTAL_URL, Portal, PortalError
 from ingest_hub.collect import SourceContext
 from ingest_hub.config import read_secret
@@ -75,8 +75,6 @@ logger = logging.getLogger(__name__)
 
 #: Points per batch handed to delivery.
 BATCH = 5000
-IMPORTED = "imported"
-FAILED = "failed"
 TOPOLOGY = "hvac-topology"
 #: The device names learnt from topologies, in the source's state directory.
 NAMES_FILE = "vaillant-export-devices.json"
@@ -442,7 +440,7 @@ class VaillantExportSource:
             wait = self._params.scan_minutes * 60
             if self._wants_fetch(context):
                 wait = min(wait, max(1.0, self._next_try - context.clock()))
-            await self._wait(context, wait)
+            await wait_or_wake(context, self._woken, wait)
 
     def _newest_day(self, context: SourceContext) -> dt.date | None:
         """The newest day an imported export held, read once from the state directory, or
@@ -498,18 +496,6 @@ class VaillantExportSource:
         logger.info("fetched an export from the portal: %d bytes", len(export))
         return True
 
-    async def _wait(self, context: SourceContext, seconds: float) -> None:
-        """Wait for the next scan, or until woken."""
-        timer = asyncio.ensure_future(context.sleep(seconds))
-        woken = asyncio.ensure_future(self._woken.wait())
-        done, pending = await asyncio.wait({timer, woken}, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        for task in done:
-            task.result()
-
     async def scan(self, context: SourceContext) -> None:
         """Import every export waiting in the inbox, oldest name first."""
         inbox = self._params.inbox
@@ -523,7 +509,7 @@ class VaillantExportSource:
             except ExportError as error:
                 context.problem(f"cannot read export {error}; moved to {FAILED}/")
                 logger.error("cannot read export %s; moving it to %s/", error, FAILED)
-                _move(path, FAILED)
+                move_aside(path, FAILED)
                 continue
             for start in range(0, len(points), BATCH):
                 if not await context.emit(points[start : start + BATCH]):
@@ -533,7 +519,7 @@ class VaillantExportSource:
                     return
             if names != known:
                 _save_names(names_path, names)
-            _move(path, IMPORTED)
+            move_aside(path, IMPORTED)
             self._note_day(context, export.complete_day)
             summary = ", ".join(f"{n} {table}" for table, n in sorted(counts.items())) or "nothing"
             logger.info("imported %s: %s", path.name, summary)
@@ -557,11 +543,8 @@ def _load_names(path: Path) -> dict[tuple[int, int], str]:
 
 def _save_names(path: Path, names: dict[tuple[int, int], str]) -> None:
     """Keep the device names for later exports, written atomically."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
     data = {f"{coupler}:{address}": name for (coupler, address), name in sorted(names.items())}
-    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.replace(temporary, path)
+    write_json(path, data, indent=2)
 
 
 def _write_private(path: Path, data: bytes) -> None:
@@ -620,17 +603,7 @@ def complete_day(entries: Iterable[tuple[str, int]]) -> dt.date | None:
 
 
 def _save_newest(path: Path, day: dt.date) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps({"newest_day": day.isoformat()}), encoding="utf-8")
-    os.replace(temporary, path)
-
-
-def _move(path: Path, folder: str) -> None:
-    """Move a file into a folder beside it, replacing an earlier file of the same name."""
-    target = path.parent / folder
-    target.mkdir(exist_ok=True)
-    os.replace(path, target / path.name)
+    write_json(path, {"newest_day": day.isoformat()})
 
 
 def build(
