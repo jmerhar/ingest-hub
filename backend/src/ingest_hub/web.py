@@ -12,8 +12,10 @@ The application's lifespan runs the sources and alerts, so one process both coll
   (``accepts_files`` in its status), as the request body, with its name in ``X-Filename``. It is
   saved in the source's inbox, under the upload time and that name, and the source is woken to
   import it; the answer gives the saved name and the server's time (``at``), which the source's
-  next ``last_success`` or ``last_error_at`` follows. The header is required, so a browser on
-  another site cannot post one without a CORS preflight, which this application never allows.
+  next ``last_success`` or ``last_error_at`` follows. The body is written to disk as it arrives,
+  up to the source's ``upload_max_bytes`` (``UPLOAD_MAX_BYTES`` by default). The header is
+  required, so a browser on another site cannot post one without a CORS preflight, which this
+  application never allows.
 - ``GET /``: the status page, which renders ``/api/status`` and refreshes itself, and its icon at
   ``/favicon.svg``.
 """
@@ -24,6 +26,7 @@ import asyncio
 import contextlib
 import os
 import re
+import tempfile
 import time
 from collections.abc import AsyncIterator, Callable
 from importlib import resources
@@ -47,7 +50,7 @@ ONLY_ENV = "INGEST_HUB_ONLY"
 #: The status is stale when the runtime has not refreshed it for this long.
 STALE_SECONDS = 180.0
 
-#: The largest file a source is handed through the web interface.
+#: The largest file a source is handed through the web interface, unless it sets its own.
 UPLOAD_MAX_BYTES = 64 * 1024 * 1024
 #: Characters an uploaded file's saved name may keep; others become ``-``.
 UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -93,21 +96,33 @@ def saved_name(filename: str, suffixes: tuple[str, ...], moment: float) -> str |
     return time.strftime("%Y%m%dT%H%M%SZ-", time.gmtime(moment)) + name
 
 
-def _write(inbox: Path, name: str, body: bytes) -> str:
-    """Write a file into an inbox without a reader ever seeing it half-written, keeping any file
-    already there under that name, readable by this user only, since an upload may hold anything;
-    returns the name it was saved under."""
+def _partial(inbox: Path) -> Path:
+    """A new, empty file in an inbox for an upload to be written into, readable by this user only,
+    since an upload may hold anything. Its name starts with a dot and ends in ``.part``, so no
+    source imports it."""
     inbox.mkdir(parents=True, exist_ok=True)
+    descriptor, path = tempfile.mkstemp(prefix=".upload-", suffix=".part", dir=inbox)
+    os.close(descriptor)
+    return Path(path)
+
+
+def _place(inbox: Path, name: str, partial: Path) -> str:
+    """Give a written upload its name in the inbox, keeping any file already there under that
+    name, so no reader ever sees it half-written; returns the name it was saved under."""
     stem, dot, suffix = name.rpartition(".")
     target, n = inbox / name, 1
     while target.exists():
         n += 1
         target = inbox / f"{stem}-{n}{dot}{suffix}"
-    partial = inbox / f".{target.name}.part"
-    with os.fdopen(os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as file:
-        file.write(body)
     os.replace(partial, target)
     return target.name
+
+
+def upload_limit(source: AcceptsFiles) -> int:
+    """The largest file a source may be handed: its own ``upload_max_bytes``, or
+    :data:`UPLOAD_MAX_BYTES`."""
+    limit = getattr(source, "upload_max_bytes", None)
+    return limit if isinstance(limit, int) and limit > 0 else UPLOAD_MAX_BYTES
 
 
 def build_app(
@@ -185,17 +200,30 @@ def build_app(
         if target is None:
             wanted = ", ".join(source.file_suffixes)
             return JSONResponse({"error": f"{name} takes {wanted} files"}, 415)
-        body = bytearray()
-        async for chunk in request.stream():
-            body.extend(chunk)
-            if len(body) > UPLOAD_MAX_BYTES:
-                limit = UPLOAD_MAX_BYTES // (1024 * 1024)
-                return JSONResponse({"error": f"files are limited to {limit} MiB"}, 413)
-        if not body:
-            return JSONResponse({"error": "the file is empty"}, 400)
-        saved = await asyncio.to_thread(_write, source.inbox, target, bytes(body))
+        limit = upload_limit(source)
+        too_large = JSONResponse(
+            {"error": f"{name} takes files of at most {limit // (1024 * 1024)} MiB"}, 413
+        )
+        with contextlib.suppress(ValueError):
+            if int(request.headers.get("content-length", "")) > limit:
+                return too_large
+        # Written to disk as it arrives, so a large upload never has to fit in memory.
+        partial = await asyncio.to_thread(_partial, source.inbox)
+        try:
+            size = 0
+            with partial.open("wb") as file:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > limit:
+                        return too_large
+                    await asyncio.to_thread(file.write, chunk)
+            if not size:
+                return JSONResponse({"error": "the file is empty"}, 400)
+            saved = await asyncio.to_thread(_place, source.inbox, target, partial)
+        finally:
+            partial.unlink(missing_ok=True)
         source.wake()
-        return JSONResponse({"saved": saved, "bytes": len(body), "at": clock()}, 201)
+        return JSONResponse({"saved": saved, "bytes": size, "at": clock()}, 201)
 
     @app.get("/favicon.svg")
     async def favicon() -> Response:

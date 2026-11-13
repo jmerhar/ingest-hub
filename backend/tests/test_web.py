@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 
 import httpx2
 import pytest
@@ -183,7 +184,16 @@ inbox = "{inbox}"
             assert txt.status_code == 415 and ".json" in txt.json()["error"]
             assert (await post("exports", body=b"")).status_code == 400
             monkeypatch.setattr(web, "UPLOAD_MAX_BYTES", 10)
-            assert (await post("exports", body=b"[" + b" " * 20 + b"]")).status_code == 413
+            refused = await post("exports", body=b"[" + b" " * 20 + b"]")
+            assert refused.status_code == 413 and "at most 0 MiB" in refused.json()["error"]
+
+            async def chunks():
+                for _ in range(3):
+                    yield b"[    ]"
+
+            # Without a length, the body is refused once it passes the limit, and nothing stays.
+            assert (await post("exports", body=chunks())).status_code == 413
+            assert list(inbox.iterdir()) == []
             monkeypatch.undo()
 
             body = json.dumps(EXPORT).encode()
@@ -200,13 +210,44 @@ inbox = "{inbox}"
             assert doc["sources"][0]["points_emitted"] == 1
 
 
+def write(inbox, name, body):
+    partial = web._partial(inbox)
+    partial.write_bytes(body)
+    return web._place(inbox, name, partial)
+
+
 def test_an_upload_never_replaces_a_file_of_the_same_name(tmp_path):
-    assert web._write(tmp_path, "a.json", b"1") == "a.json"
-    assert web._write(tmp_path, "a.json", b"2") == "a-2.json"
-    assert web._write(tmp_path, "a.json", b"3") == "a-3.json"
+    assert write(tmp_path, "a.json", b"1") == "a.json"
+    assert write(tmp_path, "a.json", b"2") == "a-2.json"
+    assert write(tmp_path, "a.json", b"3") == "a-3.json"
     assert (tmp_path / "a.json").read_bytes() == b"1"
     assert (tmp_path / "a-2.json").stat().st_mode & 0o777 == 0o600
     assert not list(tmp_path.glob(".*.part"))
+
+
+class Inbox:
+    inbox = Path("/nowhere")
+    file_suffixes = (".zip",)
+
+    def __init__(self, limit: object = None) -> None:
+        if limit is not None:
+            self.upload_max_bytes = limit
+
+    def wake(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize(
+    ("limit", "expected"),
+    [
+        (None, web.UPLOAD_MAX_BYTES),
+        (2**31, 2**31),
+        (0, web.UPLOAD_MAX_BYTES),
+        ("1", web.UPLOAD_MAX_BYTES),
+    ],
+)
+def test_a_source_can_set_its_own_upload_limit(limit, expected):
+    assert web.upload_limit(Inbox(limit)) == expected
 
 
 @pytest.mark.parametrize(

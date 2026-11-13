@@ -45,7 +45,7 @@ class Source(Protocol):
 @runtime_checkable
 class AcceptsFiles(Protocol):
     """A source that imports files dropped into a folder, which can also be handed to it, such as
-    through an upload."""
+    through an upload. It may also set ``upload_max_bytes``, the largest file it is handed."""
 
     #: The folder the source imports from.
     inbox: Path

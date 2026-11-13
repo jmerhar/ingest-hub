@@ -53,7 +53,8 @@ With `WEB_PORT` set, `ingest-hub run` also serves:
   source that imports files from a folder (`vaillant_export`, `resmed_sd`) has an upload button;
 - `/api/status`: the same as JSON;
 - `POST /api/sources/NAME/files`: save the request body in that source's inbox, named by the upload
-  time and the `X-Filename` header (required), and import it at once; at most 64 MiB;
+  time and the `X-Filename` header (required), and import it at once; at most 64 MiB unless the
+  source allows more, written to disk as it arrives;
 - `/health`: 200 while the runtime is running and refreshing its status, 503 otherwise. It does
   not depend on any destination, since restarting the process would not bring a database back.
 
