@@ -50,7 +50,8 @@ With `WEB_PORT` set, `ingest-hub run` also serves:
 
 - `/`: a page showing each source's state, last success and error, points and batches written,
   spool backlog, heartbeat, and how far each of its streams is complete, refreshed every 15 s. A
-  source that imports files from a folder (`vaillant_export`, `resmed_sd`) has an upload button;
+  source that imports files from a folder (`vaillant_export`, `resmed_sd`, `google_takeout`) has
+  an upload button;
 - `/api/status`: the same as JSON;
 - `POST /api/sources/NAME/files`: save the request body in that source's inbox, named by the upload
   time and the `X-Filename` header (required), and import it at once; at most 64 MiB unless the
@@ -309,10 +310,74 @@ on every table, for joining with other sleep data.
 The files give the device's clock without a zone. `timezone` sets the zone it is read in, an IANA
 name or a fixed offset such as `+01:00`; by default it is the card's own `TimeZoneOffset` setting,
 or for a copy without it the last card's, or UTC when no card has had one. The device keeps that
-offset all year, without summer time, so the default reads its times correctly where an IANA zone
-with summer time would put summer nights an hour off. Set `timezone` before the first import: a
-point's time depends on it, so a night imported again in another zone is written a second time,
-an hour or more from the first.
+offset all year and wherever it is, without summer time, so the default reads its times correctly
+where an IANA zone with summer time would put summer nights an hour off. Set `timezone` before the
+first import: a point's time depends on it, so a night imported again in another zone is written a
+second time, an hour or more from the first.
+
+### Google Takeout
+
+`kind = "google_takeout"` imports a Google Takeout export of Google Health: the Fitbit and Pixel
+Watch data a Google account keeps. Choose Google Health at takeout.google.com, as a `.zip`, and
+upload the zip, or every zip when Takeout splits the export, on the status page, which takes up to
+2 GiB each; or drop them into `inbox`. Every zip waiting in the inbox is imported as one export,
+then moved to `imported/`, or to `failed/` when it is not an export that can be read.
+
+Each export repeats the whole history. The source keeps the size and CRC-32 of every file it has
+imported, in its state directory (`google-takeout.json`), and imports a file again only when it
+has changed, as most of them do from one export to the next as they grow; the same points are
+written again over the old ones.
+
+| Table | From | Tags |
+|---|---|---|
+| `google_daily_heart_rate_variability`, `_daily_oxygen_saturation`, `_daily_respiratory_rate`, `_daily_sleep_temperature_derivations`, `_daily_readiness`, `_stress_score` | one row per day, computed on waking | `date`, `night` |
+| `google_daily_resting_heart_rate`, `_demographic_vo2max`, `_cardio_acute_chronic_workload_ratio` | one row per day | `date` |
+| `google_oxygen_saturation` (per minute), `_heart_rate_variability` (5 min), `_respiratory_rate_sleep_summary` (per sleep) | samples during sleep | `source`, `night` |
+| `google_steps` (per minute), `_weight`, `_body_fat` | samples | `source` |
+| `google_sleep` | one point per sleep session, at its start | `night` |
+| `google_sleep_stage` | one point per stage, at its start, field `seconds` | `night`, `stage` |
+| `google_sleep_score` | one point per scored sleep, at its end | `night` |
+| `google_heart_rate_minute` | with `heart_rate_minutes = true`: heart rate per minute, `mean`, `min`, `max`, `count` | `source` |
+
+`table_prefix` (`google_`) renames the tables; the rest of a name is the export's folder in snake
+case, which is also the Google Health API's name for the data. A field is its column's header in
+snake case: `average heart rate variability milliseconds` →
+`average_heart_rate_variability_milliseconds`. The respiratory summary's headers say "milli breaths
+per minute" over values in breaths per minute, so its fields drop the "milli":
+`deep_sleep_stats_breaths_per_minute`. Numbers are floats; the readiness levels and the workload
+label are text. An empty value, `NaN`, text in a column of numbers, and in the measurements a
+value of zero or less, which the export writes where it has none (-1 in respiratory rates and
+sleep scores, 0.0 in heart rate variability and oxygen saturation), are left out.
+
+`source` is the export's `data source`. Steps are recorded by several at once, the watch and the
+phone among them, so the same minute can appear once per source: never add steps across sources.
+
+Daily values are civil dates (`date`). Those computed from a night's sleep carry the date of the
+morning after; they are also tagged `night`, the date before, and stamped at noon of that night,
+so they line up with the night's sleep and with `cpap_night`. The others are stamped at midnight
+of their date. The stress score has its overall score in every row that has one and the
+breakdown (sleep, responsiveness and exertion points) only where Premium gave one; rows without a
+score are left out.
+
+A sleep session's night is that of its local start, from the offset the export gives it, so a
+night away keeps its own times. `main` is true for each night's longest session and false for the
+others, such as a nap. The export can hold the same sleep twice, recorded by two versions of the
+staging algorithm side by side; a session that overlaps a longer one is left out, with its stages
+and score. Stages and scores take the night of their session, and the respiratory summaries that
+of the session that ended when they were taken. Samples without an offset are put in a night in
+`timezone` (UTC by default), which also places civil dates on the time axis.
+
+A night key is shared with `resmed_sd`: both tag a night with the date of the evening it started
+on. The CPAP's clock keeps a fixed offset, so only a session starting within an hour of noon
+while that offset differs from local time (a nap at 12:30 in summer, say) can get a different
+night in each.
+
+```toml
+[sources.health.params]
+inbox = "/data/inbox/takeout"
+timezone = "Europe/Amsterdam"
+# heart_rate_minutes = true
+```
 
 ### Modbus
 

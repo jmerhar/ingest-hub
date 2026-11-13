@@ -149,6 +149,19 @@ inbox = "/data/inbox/cpap"
 # scan_minutes = 10
 # timezone = "+01:00"               # the device's clock; by default the card's TimeZoneOffset
 
+# Google Health (Fitbit, Pixel Watch) from Google Takeout exports: upload the zips on the status
+# page or drop them into the inbox.
+[sources.health]
+kind = "google_takeout"
+destination = "health"
+
+[sources.health.params]
+inbox = "/data/inbox/takeout"
+timezone = "Europe/Amsterdam"       # for civil dates and samples without an offset
+# heart_rate_minutes = true         # heart rate per minute: mean, min, max
+# table_prefix = "google_"
+# scan_minutes = 10
+
 # A hybrid inverter and battery over Modbus TCP, here through a proxy that shares the device's
 # single connection with another controller.
 [sources.battery]
