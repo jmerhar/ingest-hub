@@ -19,6 +19,13 @@ url = "http://influxdb:8181"
 database = "example"
 token_file = "/run/secrets/influxdb_token"
 
+# Health data in a database of its own, with a token that can write only there.
+[destinations.health]
+kind = "influx3"
+url = "http://influxdb:8181"
+database = "health"
+token_file = "/run/secrets/influxdb_health_token"
+
 # A Tuya cloud project: every device's report log, one table per device category
 # (table_prefix + category, such as tuya_cz for plugs), tagged device_id and category.
 [sources.plugs]
@@ -128,6 +135,19 @@ devices = { heat_pump = "heatpump", hp_accessory = "electric_auxiliary_heater" }
 # retry_minutes = 60
 # not_before = 12:00              # no fetch before this time of day, in timezone
 # timezone = "Europe/Amsterdam"
+
+# A ResMed CPAP's SD card: zips of it uploaded on the status page or dropped into the inbox
+# (leave the BRP waveform files out), and a folder holding a copy of the card.
+[sources.cpap]
+kind = "resmed_sd"
+destination = "health"
+
+[sources.cpap.params]
+inbox = "/data/inbox/cpap"
+# card = "/data/cards/cpap"         # read in place, never changed
+# table_prefix = "cpap_"
+# scan_minutes = 10
+# timezone = "+01:00"               # the device's clock; by default the card's TimeZoneOffset
 
 # A hybrid inverter and battery over Modbus TCP, here through a proxy that shares the device's
 # single connection with another controller.
