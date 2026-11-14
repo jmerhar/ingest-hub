@@ -494,9 +494,9 @@ class ResmedSource:
 
     file_suffixes = (".zip",)
     upload_help = (
-        "A zip of the CPAP's SD card. Leave out the 25 Hz waveform files, which make a card too "
-        "large: in the card's folder, run `zip -r card.zip . -x '*_BRP.edf'`. A card repeats its "
-        "old nights; only new or changed files are imported."
+        "A zip of the CPAP's SD card, without the 25 Hz waveform files, which make a card too "
+        "large. In the card's folder, run: `zip -r card.zip . -x '*_BRP.edf'` A card repeats "
+        "its old nights; only new or changed files are imported."
     )
 
     def __init__(self, params: ResmedParams) -> None:
