@@ -48,20 +48,23 @@ STRESS_HEADER = (
 )
 T = "2026-11-11T09:00:00Z"
 
-#: Night of 10 Nov 2026 (+01:00): the main sleep 23:30-07:00 local, a shorter recording of the
+#: Night of 10 Nov 2026 (+01:00): the main sleep 23:30-07:00 local, a longer recording of the
 #: same sleep by an older algorithm, and a nap at 10:00 the next morning, before noon, so of the
-#: same night. Night of 13 Jul 2026 (+02:00):
+#: same night. Night of 22 Jun 2025: a sleep whose times the export gives in local time labelled
+#: +00:00 (02:25-09:00), while its stages carry the true +02:00. Night of 13 Jul 2026 (+02:00):
 #: one sleep 23:00-06:30 local.
 SLEEPS = csv(
     SLEEPS_HEADER,
     f"100,STAGES,450,0,0,420,30,12,0,+01:00,2026-11-10T22:30:00Z,+01:00,2026-11-11T06:00:00Z,"
     f"DERIVED,sleep_session_v2,{T},{T}",
-    f"101,STAGES,440,0,0,410,30,12,0,+01:00,2026-11-10T22:30:00Z,+01:00,2026-11-11T05:50:00Z,"
+    f"101,STAGES,460,0,0,430,30,12,0,+01:00,2026-11-10T22:30:00Z,+01:00,2026-11-11T06:10:00Z,"
     f"DERIVED,sleep_session_v1,{T},{T}",
     f"102,CLASSIC,40,0,0,35,5,3,0,+01:00,2026-11-11T09:00:00Z,+01:00,2026-11-11T09:40:00Z,"
     f"DERIVED,sleep_session_v2,{T},{T}",
     f"200,STAGES,450,0,0,430,20,8,0,+02:00,2026-07-13T21:00:00Z,+02:00,2026-07-14T04:30:00Z,"
     f"MANUAL,sleep_session_v1,{T},{T}",
+    f"300,STAGES,395,0,0,380,15,5,0,+00:00,2025-06-23T02:25:00Z,+00:00,2025-06-23T09:00:00Z,"
+    f"DERIVED,sleep_session_v1,{T},{T}",
     "bad,STAGES,1,0,0,1,0,0,0,+01:00,not a time,+01:00,2026-11-11T06:00:00Z,DERIVED,v,,",
 )
 STAGES = csv(
@@ -70,6 +73,8 @@ STAGES = csv(
     f"100,2,DEEP,+01:00,2026-11-10T22:43:30Z,+01:00,2026-11-10T23:30:00Z,DERIVED,v2,{T},{T}",
     f"101,3,LIGHT,+01:00,2026-11-10T22:30:00Z,+01:00,2026-11-10T22:40:00Z,DERIVED,v1,{T},{T}",
     f"999,4,AWAKE,+01:00,2026-11-12T23:10:00Z,+01:00,2026-11-12T23:12:00Z,DERIVED,v2,{T},{T}",
+    f"300,5,LIGHT,+02:00,2025-06-23T00:25:00Z,+02:00,2025-06-23T00:40:00Z,DERIVED,none,{T},{T}",
+    f"300,6,DEEP,+02:00,2025-06-23T00:40:00Z,+02:00,2025-06-23T01:10:00Z,DERIVED,none,{T},{T}",
 )
 SCORES = csv(
     SCORES_HEADER,
@@ -79,6 +84,8 @@ SCORES = csv(
     f"{T},{T}",
     f"200,3,MANUAL,+02:00,2026-07-14T04:30:00Z,74.4,77.5,81.6,61.1,430,55,18.0,60,480,1.7,10,"
     f"0.3,0.97,{T},{T}",
+    f"300,4,DERIVED,+00:00,2025-06-23T09:00:00Z,81.0,-1,-1,-1,380,60,20.0,55,480,2,12,0.2,0.95,"
+    f"{T},{T}",
 )
 STRESS = csv(
     STRESS_HEADER,

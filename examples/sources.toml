@@ -163,8 +163,25 @@ person = "alex"                     # tagged on every point; one source per pers
 inbox = "/data/inbox/takeout"
 timezone = "Europe/Amsterdam"       # for civil dates and samples without an offset
 # heart_rate_minutes = true         # heart rate per minute: mean, min, max
+# api_data = false                  # only what the API lacks, when google_health reads it
 # table_prefix = "google_"
 # scan_minutes = 10
+
+# The same account through the Google Health API, polled; each person consents once with
+# `ingest-hub google-auth --source google_alex`.
+[sources.google_alex]
+kind = "google_health"
+destination = "health"
+
+[sources.google_alex.params]
+person = "alex"
+client_id_file = "/run/secrets/google_health_client_id"
+client_secret_file = "/run/secrets/google_health_client_secret"
+timezone = "Europe/Amsterdam"
+# poll_minutes = 60
+# history_days = 30                 # how far back the first poll reads
+# rescan_hours = 72                 # how far behind its cursor each poll reads again
+# heart_rate_minutes = true
 
 # A hybrid inverter and battery over Modbus TCP, here through a proxy that shares the device's
 # single connection with another controller.

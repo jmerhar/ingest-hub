@@ -6,6 +6,8 @@
                                              write a saved Tuya report-log dump
     ingest-hub compare --destination NAME OLD NEW [--hours H] [--tolerance T]
                                              compare a shadow table with the one it replaces
+    ingest-hub google-auth --source SOURCE [--port P] [--address URL]
+                                             consent to a Google Health source reading your data
 
 Settings come from the environment (DATA_DIR, CONFIG_FILE, LOG_LEVEL, SPOOL_MAX_BYTES); sources
 and destinations from the configuration file.
@@ -20,6 +22,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from collections.abc import Coroutine, Sequence
 from pathlib import Path
 from typing import Any
@@ -33,6 +36,18 @@ from pydantic import ValidationError
 
 from ingest_hub import __version__
 from ingest_hub.adapters import tuya
+from ingest_hub.adapters.google import health as google_health
+from ingest_hub.adapters.google.api import ApiError, HealthApi
+from ingest_hub.adapters.google.oauth import (
+    AuthError,
+    code_from_redirect,
+    exchange,
+    load_consent,
+    missing_scopes,
+    save_consent,
+    save_token,
+    start_consent,
+)
 from ingest_hub.adapters.tuya.dump import DumpError, import_dump
 from ingest_hub.alerts import read_urls
 from ingest_hub.compare import compare
@@ -142,6 +157,46 @@ async def _compare(
     return 0 if result.ok(tolerance) else 1
 
 
+async def _google_auth(settings: Settings, source: str, port: int, address: str | None) -> int:
+    """Consent to a Google Health source in two runs: without ``address``, start a consent and show
+    the address to open; with the address the browser was sent to, finish it and keep the refresh
+    token in the source's state directory."""
+    config = load_config(settings.resolved_config_file)
+    if source not in config.sources:
+        raise ConfigError(f"no source named {source!r}")
+    if config.sources[source].kind != "google_health":
+        raise ConfigError(f"source {source!r} is not a Google Health source")
+    params = source_params(config, source)
+    assert isinstance(params, google_health.GoogleHealthParams)
+    credentials = google_health.credentials_of(params)
+    state_dir = settings.data_dir / "state" / source
+    if address is None:
+        consent = start_consent(credentials, port)
+        save_consent(state_dir, consent)
+        print(
+            "1. Open this address in a browser, signed in to the Google account whose data is "
+            f"{params.person}'s:\n\n{consent.url}\n\n"
+            "2. Allow every access it asks for.\n"
+            "3. The browser then fails to open a page on 127.0.0.1. Copy that page's whole address "
+            "from the address bar and run:\n\n"
+            f"   ingest-hub google-auth --source {source} --address '<the address>'"
+        )
+        return 0
+    consent = load_consent(state_dir)
+    code = code_from_redirect(address, consent.state)
+    async with httpx2.AsyncClient() as client:
+        refresh_token, scopes = await exchange(client, credentials, consent, code, params.token_url)
+        api = HealthApi(
+            client, credentials, refresh_token, url=params.url, token_url=params.token_url
+        )
+        await api.identity()
+    path = save_token(state_dir, refresh_token, scopes, time.time())
+    print(f"Signed in: the source reads {params.person}'s data from its next poll ({path}).")
+    if missing := missing_scopes(scopes):
+        print(f"Not granted, so not read: {', '.join(missing)}. Consent again to grant them.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse the command line and run the command; configuration errors exit 2."""
     parser = argparse.ArgumentParser(prog="ingest-hub", description=__doc__.split("\n", 1)[0])
@@ -161,6 +216,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     comparing.add_argument(
         "--tolerance", type=float, default=0.01, help="largest relative difference of a mean"
     )
+    auth = commands.add_parser("google-auth")
+    auth.add_argument("--source", required=True, help="the Google Health source to consent to")
+    auth.add_argument(
+        "--port", type=int, default=8765, help="the 127.0.0.1 port Google redirects the browser to"
+    )
+    auth.add_argument("--address", help="the address the browser was sent to after consenting")
     args = parser.parse_args(argv)
 
     try:
@@ -181,7 +242,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return asyncio.run(
                 _compare(settings, args.destination, args.old, args.new, args.hours, args.tolerance)
             )
+        if args.command == "google-auth":
+            return asyncio.run(_google_auth(settings, args.source, args.port, args.address))
         return asyncio.run(_import_tuya_dump(settings, args.directory, args.source))
-    except (ConfigError, DumpError) as error:
+    except (ConfigError, DumpError, AuthError, ApiError) as error:
         print(f"ingest-hub: {error}", file=sys.stderr)
         return 2

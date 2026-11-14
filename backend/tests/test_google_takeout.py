@@ -118,9 +118,9 @@ EXPECTED = {
     "google_oxygen_saturation": 1,
     "google_steps": 4,
     "google_weight": 1,
-    "google_sleep": 3,
-    "google_sleep_stage": 3,
-    "google_sleep_score": 2,
+    "google_sleep": 4,
+    "google_sleep_stage": 5,
+    "google_sleep_score": 3,
     "google_stress_score": 2,
 }
 
@@ -196,7 +196,7 @@ async def test_daily_values_are_keyed_by_date_and_the_night_before(tmp_path):
     assert plain.fields == {"stress_score": 77.0, "status": "READY_NOT_PREMIUM"}
 
 
-async def test_samples_are_tagged_with_their_source_and_sleep_samples_with_the_night(tmp_path):
+async def test_steps_are_tagged_with_their_source_and_sleep_samples_with_the_night(tmp_path):
     harness = Harness(tmp_path)
     write_zip(harness.inbox / "t.zip", export_files())
     await harness.source.scan(harness.context)
@@ -210,7 +210,7 @@ async def test_samples_are_tagged_with_their_source_and_sleep_samples_with_the_n
         (utc(2026, 11, 11, 8, 4) + 250, {"source": "Pixel Watch 2"}, {"steps": 4.0}),
     ]
     (spo2,) = table(points, "oxygen_saturation")  # the 0.0 reading is left out
-    assert tags(spo2) == {"night": "2026-11-10", "source": "Pixel Watch 2"}
+    assert tags(spo2) == {"night": "2026-11-10"}  # one device records it: no source
     assert spo2.fields == {"oxygen_saturation_percentage": 97.3}
     (summary,) = table(points, "respiratory_rate_sleep_summary")
     assert tags(summary)["night"] == "2026-11-10"
@@ -227,7 +227,7 @@ async def test_samples_are_tagged_with_their_source_and_sleep_samples_with_the_n
         "full_sleep_stats_signal_to_noise": 4.763,
     }
     (weight,) = table(points, "weight")
-    assert tags(weight) == {"source": "Withings Fitbit 3P Web API"}
+    assert tags(weight) == {}
     assert weight.fields == {"weight_grams": 72500.0}
     assert table(points, "heart_rate_minute") == []  # only with heart_rate_minutes
 
@@ -243,6 +243,8 @@ async def test_sleeps_have_a_main_session_a_nap_and_no_duplicate_recordings(tmp_
         (utc(2026, 11, 10, 22, 30), "2026-11-10", True),
         (utc(2026, 11, 11, 9), "2026-11-10", False),  # the nap, the morning after
         (utc(2026, 7, 13, 21), "2026-07-13", True),  # 23:00 at +02:00
+        # Given as 02:25 at +00:00; its stages' +02:00 makes it 00:25 UTC, 02:25 local.
+        (utc(2025, 6, 23, 0, 25), "2025-06-22", True),
     ]
     assert table(points, "sleep")[0].fields == {
         "main": True,
@@ -266,8 +268,11 @@ async def test_sleeps_have_a_main_session_a_nap_and_no_duplicate_recordings(tmp_
         ),
         # A stage of a sleep not in the export takes the night of its own start.
         (utc(2026, 11, 12, 23, 10), {"night": "2026-11-12", "stage": "awake"}, {"seconds": 120.0}),
+        (utc(2025, 6, 23, 0, 25), {"night": "2025-06-22", "stage": "light"}, {"seconds": 900.0}),
+        (utc(2025, 6, 23, 0, 40), {"night": "2025-06-22", "stage": "deep"}, {"seconds": 1800.0}),
     ]
-    first, summer = table(points, "sleep_score")
+    first, summer, corrected = table(points, "sleep_score")
+    assert corrected.timestamp == utc(2025, 6, 23, 7) and tags(corrected)["night"] == "2025-06-22"
     assert tags(first) == {"night": "2026-11-10"}
     assert first.fields["overall_score"] == 87.5
     assert "duration_score" not in first.fields  # -1: Premium only
@@ -618,3 +623,44 @@ def test_a_respiratory_summary_takes_the_night_of_the_sleep_that_ended_with_it(t
     row = {"timestamp": "2026-11-11T12:30:00Z", "full sleep stats - milli breaths per minute": "13"}
     (summary,) = points.family("Respiratory Rate Sleep Summary", [row])
     assert tags(summary)["night"] == "2026-11-10"
+
+
+async def test_without_api_data_only_what_the_api_lacks_is_imported(tmp_path, caplog):
+    harness = Harness(tmp_path, api_data=False)
+    caplog.set_level("INFO")
+    write_split(harness.inbox, export_files())
+    assert await harness.source.scan(harness.context)
+    points = harness.take()
+    assert Counter(p.table for p in points) == {
+        "google_daily_readiness": 1,
+        "google_cardio_acute_chronic_workload_ratio": 1,
+        "google_stress_score": 2,
+        "google_sleep_score": 3,
+    }
+    # The sessions are still read, for their scores' nights and corrected times.
+    nights = {tags(p)["night"]: p.timestamp for p in table(points, "sleep_score")}
+    assert nights == {
+        "2026-11-10": utc(2026, 11, 11, 6),
+        "2026-07-13": utc(2026, 7, 14, 4, 30),
+        "2025-06-22": utc(2025, 6, 23, 7),
+    }
+    assert "corrected the times of 2 sleep(s) and score(s)" in caplog.text
+
+    # With api_data set again, the sessions are written, though their file has not changed.
+    harness.source = TakeoutSource(harness.params.model_copy(update={"api_data": True}))
+    write_split(harness.inbox, export_files(), stem="takeout-2")
+    await harness.source.scan(harness.context)
+    assert Counter(p.table for p in harness.points)["google_sleep"] == 4
+
+
+async def test_stages_whose_offsets_cannot_be_read_correct_nothing(tmp_path, caplog):
+    harness = Harness(tmp_path)
+    files = export_files()
+    stages = f"{SLEEP}UserSleepStages_2026-02-24.csv"
+    files[stages] += b",,,,,,,,,,\n"  # a row without an id or offset
+    files[f"{SLEEP}UserSleepStages_2027-02-24.csv"] = b'sleep_id,start_utc_offset\n"300,+02:00\n'
+    write_zip(harness.inbox / "t.zip", files)
+    await harness.source.scan(harness.context)
+    assert "cannot read the stages' offsets" in caplog.text
+    corrected = [p for p in table(harness.points, "sleep") if tags(p)["night"] == "2025-06-22"]
+    assert corrected[0].timestamp == utc(2025, 6, 23, 0, 25)  # the readable file still gives it

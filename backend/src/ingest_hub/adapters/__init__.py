@@ -19,6 +19,7 @@ from ingest_hub.adapters import (
     vaillant,
     zaptec,
 )
+from ingest_hub.adapters.google import health as google_health
 from ingest_hub.adapters.google import takeout as google_takeout
 from ingest_hub.adapters.vaillant import export as vaillant_export
 from ingest_hub.collect import Source
@@ -36,6 +37,7 @@ class Adapter:
 ADAPTERS: dict[str, Adapter] = {
     "alphaess_cloud": Adapter(alphaess_cloud.AlphaCloudParams, alphaess_cloud.build),
     "frank": Adapter(frank.FrankParams, frank.build),
+    "google_health": Adapter(google_health.GoogleHealthParams, google_health.build),
     "google_takeout": Adapter(google_takeout.TakeoutParams, google_takeout.build),
     "modbus": Adapter(modbus.ModbusParams, modbus.build),
     "mqtt": Adapter(mqtt.MqttParams, mqtt.build),

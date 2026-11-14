@@ -16,16 +16,17 @@ Google Health API's name for the data type (``Daily Resting Heart Rate`` →
   morning, so they are also tagged ``night``, the date before (see ``night.py``), and stamped at
   noon of the night in ``timezone``; the others (resting heart rate, VO2 max, the cardio
   workload ratio) at midnight of their date;
-- timestamped samples, tagged ``source`` (the export's ``data source``, such as ``Pixel Watch 2``;
-  steps are recorded by several sources at once, which must never be added together): steps,
-  weight, body fat, and the sleep-time series, also tagged ``night``: oxygen saturation every
-  minute, heart rate variability every five minutes, and each sleep's respiratory rate summary;
+- timestamped samples: steps, tagged ``source`` (the export's ``data source``, such as ``Pixel
+  Watch 2``; the watch and the phone both count steps, which must never be added together),
+  weight, body fat, and the sleep-time series, tagged ``night``: oxygen saturation every minute,
+  heart rate variability every five minutes, and each sleep's respiratory rate summary;
 - sleep sessions (``sleep``, at each session's start, tagged ``night`` from its local start
   time), their stages (``sleep_stage``, tagged ``night`` and ``stage``, field ``seconds``) and
-  scores (``sleep_score``, tagged ``night``); ``main`` is true for the longest session of each
-  night, false for the others (naps). A session that overlaps a longer one is the same sleep
-  recorded twice (the export keeps the recordings of two staging algorithms side by side) and is
-  left out, with its stages and score;
+  scores (``sleep_score``, tagged ``night``); ``main`` marks each night's main sleep. Sessions
+  that overlap are the same sleep recorded twice (the export keeps the recordings of two staging
+  algorithms side by side); one is kept, the others are left out with their stages and scores
+  (see ``common.py``). Where a session's and its score's times are local time labelled
+  ``+00:00`` while its stages carry the true offset, the stages' offset corrects them;
 - the stress score (``stress_score``): the overall score of every row that has one, the Premium
   breakdown only where the export gives it (``STATUS`` ``READY``);
 - with ``heart_rate_minutes``, heart rate per minute (``heart_rate_minute``, tagged ``source``):
@@ -44,6 +45,11 @@ which the source keeps in its state directory with the fingerprint (size and CRC
 file imported. A file whose fingerprint is unchanged is skipped; a file that grew, as most do from
 one export to the next, is imported again, writing the same points over the old ones. The sleep
 files are imported before the rest, whichever zip of an export holds them.
+
+With ``api_data`` false, only the data the Google Health API does not offer is imported (sleep
+scores, readiness, stress, the cardio workload ratio, the demographic VO2 max), for a
+``google_health`` source to read the rest; the sleep sessions are still read, for the scores'
+nights and times, but not written.
 """
 
 from __future__ import annotations
@@ -69,6 +75,13 @@ import httpx2
 from jigkit.sinks import FieldValue, Point, Precision
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ingest_hub.adapters.google.common import (
+    Sleep,
+    parse_offset,
+    parse_time,
+    resolve_sleeps,
+    to_ms,
+)
 from ingest_hub.adapters.inbox import FAILED, IMPORTED, move_aside, wait_or_wake, write_json
 from ingest_hub.adapters.night import night_of
 from ingest_hub.collect import SourceContext
@@ -150,11 +163,15 @@ class Family:
     ``kind`` is ``night`` (a daily value computed from the night before), ``day`` (a daily value)
     or ``sample`` (a timestamped sample); ``night`` on a sample tags it with the night it was
     measured in. ``positive`` leaves out numbers of zero or less, which the file uses for "none".
+    ``source`` tags a sample with its source, for the data several devices record at once.
+    ``api`` marks the data the Google Health API offers as well.
     """
 
     kind: str
     positive: bool = True
     night: bool = False
+    source: bool = False
+    api: bool = True
 
 
 FAMILIES = {
@@ -163,13 +180,13 @@ FAMILIES = {
     "Daily Oxygen Saturation": Family("night"),
     "Daily Respiratory Rate": Family("night"),
     "Daily Sleep Temperature Derivations": Family("night"),
-    "Daily Readiness": Family("night", positive=False),
-    "Demographic Vo2max": Family("day"),
-    "Cardio Acute Chronic Workload Ratio": Family("day", positive=False),
+    "Daily Readiness": Family("night", positive=False, api=False),
+    "Demographic Vo2max": Family("day", api=False),
+    "Cardio Acute Chronic Workload Ratio": Family("day", positive=False, api=False),
     "Respiratory Rate Sleep Summary": Family("sample", night=True),
     "Heart Rate Variability": Family("sample", night=True),
     "Oxygen Saturation": Family("sample", night=True),
-    "Steps": Family("sample", positive=False),
+    "Steps": Family("sample", positive=False, source=True),
     "Weight": Family("sample"),
     "Body Fat": Family("sample"),
 }
@@ -194,6 +211,9 @@ class TakeoutParams(BaseModel):
     timezone: str = "UTC"
     #: Also import heart rate, as each minute's mean, minimum and maximum.
     heart_rate_minutes: bool = False
+    #: Also import what the Google Health API offers; false when a ``google_health`` source
+    #: reads it.
+    api_data: bool = True
 
     @field_validator("timezone")
     @classmethod
@@ -228,42 +248,6 @@ def value(raw: str | None, *, positive: bool, text: bool = False) -> FieldValue 
     return number
 
 
-def parse_time(text: str) -> dt.datetime:
-    """An export timestamp in UTC: RFC 3339 with ``Z`` or an offset, with or without fractions of
-    a second. Raises ValueError when it is none of these."""
-    moment = dt.datetime.fromisoformat(text.strip())
-    if moment.tzinfo is None:
-        raise ValueError(f"no zone in {text!r}")
-    return moment.astimezone(dt.UTC)
-
-
-def parse_offset(text: str) -> dt.timedelta:
-    """A UTC offset such as ``+01:00``; raises ValueError when it is not one."""
-    match = re.fullmatch(r"([+-])(\d{2}):(\d{2})", text.strip())
-    if not match:
-        raise ValueError(f"not an offset: {text!r}")
-    sign = -1 if match.group(1) == "-" else 1
-    return sign * dt.timedelta(hours=int(match.group(2)), minutes=int(match.group(3)))
-
-
-def _ms(moment: dt.datetime) -> int:
-    return int(moment.timestamp() * 1000)
-
-
-@dataclass
-class Sleep:
-    """What is kept of a sleep session to join its stages, scores and summary to it."""
-
-    night: str
-    start_ms: int
-    end_ms: int
-    minutes: float
-    #: Whether the session was last written as its night's main sleep.
-    main: bool = False
-    #: Whether it overlaps a longer session of its night: the same sleep recorded twice.
-    duplicate: bool = False
-
-
 @dataclass
 class State:
     """The fingerprints of the files imported so far, by path, and the sleeps seen, by id."""
@@ -279,9 +263,16 @@ class State:
 class Points:
     """Turns an export's files into points."""
 
-    def __init__(self, params: TakeoutParams, state: State) -> None:
+    def __init__(
+        self, params: TakeoutParams, state: State, offsets: dict[str, str] | None = None
+    ) -> None:
         self._prefix = params.table_prefix
         self._person = params.person
+        self._write_sessions = params.api_data
+        #: Each session's UTC offset as its stages give it, by ``sleep_id``.
+        self._offsets = offsets or {}
+        #: Sessions and scores whose times were corrected from their stages' offset.
+        self.corrected = 0
         self._zone = ZoneInfo(params.timezone)
         self._state = state
         self.counts: Counter[str] = Counter()
@@ -303,7 +294,7 @@ class Points:
 
     def _civil(self, date: dt.date, hour: int) -> int:
         """A civil date at an hour, in ``timezone``, in Unix milliseconds."""
-        return _ms(dt.datetime.combine(date, dt.time(hour), self._zone))
+        return to_ms(dt.datetime.combine(date, dt.time(hour), self._zone))
 
     def _sample_night(self, moment: dt.datetime) -> str:
         return night_of(moment.astimezone(self._zone).replace(tzinfo=None))
@@ -342,8 +333,10 @@ class Points:
             elif spec.kind == "day":
                 yield self._point(table, {"date": date.isoformat()}, self._civil(date, 0), fields)
             else:
-                ms = _ms(moment)
-                tags = {"source": (row.get("data source") or "unknown").strip()}
+                ms = to_ms(moment)
+                tags = (
+                    {"source": (row.get("data source") or "unknown").strip()} if spec.source else {}
+                )
                 if spec.night:
                     tags["night"] = by_end.get(ms) or self._sample_night(moment)
                 yield self._point(table, tags, ms, fields)
@@ -356,8 +349,13 @@ class Points:
             try:
                 start = parse_time(row["sleep_start"])
                 end = parse_time(row["sleep_end"])
-                local = (start + parse_offset(row["start_utc_offset"])).replace(tzinfo=None)
                 sleep_id = row["sleep_id"].strip()
+                offset = self._offset(sleep_id, row["start_utc_offset"])
+                if offset is not None:
+                    start, end = start - offset, end - offset
+                else:
+                    offset = parse_offset(row["start_utc_offset"])
+                local = (start + offset).replace(tzinfo=None)
                 minutes = float(row.get("minutes_in_sleep_period") or 0)
             except AttributeError, KeyError, ValueError:
                 self.skipped += 1
@@ -365,13 +363,22 @@ class Points:
             if not sleep_id:
                 self.skipped += 1
                 continue
-            sleep = Sleep(night_of(local), _ms(start), _ms(end), minutes)
+            sleep = Sleep(
+                night_of(local),
+                to_ms(start),
+                to_ms(end),
+                minutes,
+                version=(row.get("algorithm_version") or "").strip(),
+                staged=(row.get("sleep_type") or "").strip() == "STAGES",
+            )
             sessions.append((sleep_id, row, sleep))
         known = self._state.sleeps
         for sleep_id, _, sleep in sessions:
             known[sleep_id] = sleep
         nights = {sleep.night for _, _, sleep in sessions}
-        main = _resolve(known, nights)
+        main = resolve_sleeps(known, nights)
+        if not self._write_sessions:
+            return
         in_file = set()
         for sleep_id, row, sleep in sessions:
             in_file.add(sleep_id)
@@ -397,6 +404,19 @@ class Points:
                 yield self._point(
                     "sleep", {"night": sleep.night}, sleep.start_ms, {"main": is_main}
                 )
+
+    def _offset(self, sleep_id: str, given: str) -> dt.timedelta | None:
+        """The offset to correct a session's or score's times by, or None when they are right.
+
+        Some exports give a session's and its score's times in local time, labelled UTC with an
+        offset of ``+00:00``, while its stages carry the true offset; the true UTC time is then
+        the given one less the stages' offset."""
+        stage = self._offsets.get(sleep_id)
+        if given.strip() != "+00:00" or stage in (None, "+00:00"):
+            return None
+        offset = parse_offset(stage)
+        self.corrected += 1
+        return offset
 
     def _kept(self, row: dict[str, str]) -> Sleep | None | bool:
         """The sleep a stage or score row belongs to: the session, None when it is not known,
@@ -426,7 +446,7 @@ class Points:
                 self.skipped += 1
                 continue
             yield self._point(
-                "sleep_stage", {"night": night, "stage": stage}, _ms(start), {"seconds": seconds}
+                "sleep_stage", {"night": night, "stage": stage}, to_ms(start), {"seconds": seconds}
             )
 
     def scores(self, rows: Iterable[dict[str, str]]) -> Iterator[Point]:
@@ -434,7 +454,12 @@ class Points:
         for row in rows:
             try:
                 moment = parse_time(row["score_time"])
-                local = (moment + parse_offset(row["score_utc_offset"])).replace(tzinfo=None)
+                offset = self._offset((row.get("sleep_id") or "").strip(), row["score_utc_offset"])
+                if offset is not None:
+                    moment -= offset
+                else:
+                    offset = parse_offset(row["score_utc_offset"])
+                local = (moment + offset).replace(tzinfo=None)
             except AttributeError, KeyError, ValueError:
                 self.skipped += 1
                 continue
@@ -449,7 +474,7 @@ class Points:
                 and not (isinstance(parsed, float) and parsed < 0)
             }
             if fields:
-                yield self._point("sleep_score", {"night": night}, _ms(moment), fields)
+                yield self._point("sleep_score", {"night": night}, to_ms(moment), fields)
 
     def stress(self, rows: Iterable[dict[str, str]]) -> Iterator[Point]:
         """The points of the stress score file: rows with a score, the breakdown when given."""
@@ -487,7 +512,7 @@ class Points:
                 continue
             if not math.isfinite(bpm) or bpm <= 0:
                 continue
-            minute = _ms(moment) // 60_000 * 60_000
+            minute = to_ms(moment) // 60_000 * 60_000
             source = (row.get("data source") or "unknown").strip()
             minutes.setdefault((minute, source), []).append(bpm)
         for (minute, source), readings in sorted(minutes.items()):
@@ -498,27 +523,6 @@ class Points:
                 "count": float(len(readings)),
             }
             yield self._point("heart_rate_minute", {"source": source}, minute, fields)
-
-
-def _resolve(sleeps: dict[str, Sleep], nights: set[str]) -> dict[str, str]:
-    """Mark the sessions of these nights that overlap a longer one as duplicates, and return the
-    id of each night's main sleep: its longest session, the earliest when two tie."""
-    by_night: dict[str, list[tuple[float, int, str]]] = {}
-    for sleep_id, sleep in sleeps.items():
-        if sleep.night in nights:
-            by_night.setdefault(sleep.night, []).append((-sleep.minutes, sleep.start_ms, sleep_id))
-    main: dict[str, str] = {}
-    for night, ranked in by_night.items():
-        kept: list[Sleep] = []
-        for _, _, sleep_id in sorted(ranked):
-            sleep = sleeps[sleep_id]
-            sleep.duplicate = any(
-                sleep.start_ms < other.end_ms and sleep.end_ms > other.start_ms for other in kept
-            )
-            if not sleep.duplicate:
-                kept.append(sleep)
-                main.setdefault(night, sleep_id)
-    return main
 
 
 def file_kind(relative: str, heart_rate: bool) -> str | None:
@@ -579,6 +583,22 @@ class Export:
         """The imported paths: the sleep sessions first, so the files that join to them find
         them."""
         return sorted(self.members, key=lambda r: (not SLEEPS.match(r), r))
+
+    def stage_offsets(self) -> dict[str, str]:
+        """Each session's UTC offset as its stages give it, the most common among them, by
+        ``sleep_id``; sessions whose stages cannot be read are left out."""
+        counts: dict[str, Counter[str]] = {}
+        for relative in self.members:
+            if not STAGES.match(relative):
+                continue
+            try:
+                for row in self.rows(relative):
+                    sleep_id = (row.get("sleep_id") or "").strip()
+                    if sleep_id and (offset := (row.get("start_utc_offset") or "").strip()):
+                        counts.setdefault(sleep_id, Counter())[offset] += 1
+            except ExportError as error:
+                logger.warning("cannot read the stages' offsets: %s", error)
+        return {sleep_id: c.most_common(1)[0][0] for sleep_id, c in counts.items()}
 
     def fingerprint(self, relative: str) -> str:
         member = self.members[relative][1]
@@ -664,11 +684,18 @@ class TakeoutSource:
         when a batch was refused."""
         state_path = context.state_dir / STATE_FILE
         state = _load_state(state_path)
-        builder = Points(self._params, state)
+        offsets = await asyncio.to_thread(export.stage_offsets)
+        builder = Points(self._params, state, offsets)
         changed = skipped = 0
         try:
             for relative in export.files():
+                kind = file_kind(relative, self._params.heart_rate_minutes)
+                if not self._wanted(kind):
+                    continue
                 fingerprint = export.fingerprint(relative)
+                if kind == "sleeps" and not self._params.api_data:
+                    # Read for their nights only; written once api_data is set again.
+                    fingerprint += ":nights"
                 if state.files.get(relative) == fingerprint:
                     skipped += 1
                     continue
@@ -689,6 +716,8 @@ class TakeoutSource:
             logger.warning("skipped %d row(s) that could not be read", builder.skipped)
         if builder.duplicates:
             logger.info("left out %d sleep session(s) overlapping a longer one", builder.duplicates)
+        if builder.corrected:
+            logger.info("corrected the times of %d sleep(s) and score(s)", builder.corrected)
         if changed:
             summary = ", ".join(f"{n} {t}" for t, n in sorted(builder.counts.items())) or "nothing"
             names = ", ".join(p.name for p in export.paths)
@@ -696,6 +725,13 @@ class TakeoutSource:
                 "imported %s: %d file(s), %d unchanged: %s", names, changed, skipped, summary
             )
         return True
+
+    def _wanted(self, kind: str | None) -> bool:
+        """Whether files of a kind are imported: all, or with ``api_data`` false, those the
+        Google Health API does not offer, and the sleep sessions for their scores' nights."""
+        if self._params.api_data or kind in ("sleeps", "scores", "stress"):
+            return True
+        return kind in FAMILIES and not FAMILIES[kind].api
 
     def _points(self, builder: Points, relative: str, export: Export) -> Iterator[Point]:
         kind = file_kind(relative, self._params.heart_rate_minutes)
@@ -720,7 +756,16 @@ def _load_state(path: Path) -> State:
         data: Any = json.loads(path.read_text(encoding="utf-8"))
         files = {str(k): str(v) for k, v in data["files"].items()}
         sleeps = {
-            str(k): Sleep(str(v[0]), int(v[1]), int(v[2]), float(v[3]), bool(v[4]), bool(v[5]))
+            str(k): Sleep(
+                str(v[0]),
+                int(v[1]),
+                int(v[2]),
+                float(v[3]),
+                bool(v[4]),
+                bool(v[5]),
+                str(v[6]),
+                bool(v[7]),
+            )
             for k, v in data["sleeps"].items()
         }
         return State(files, sleeps)
@@ -734,7 +779,7 @@ def _load_state(path: Path) -> State:
 def _save_state(path: Path, state: State) -> None:
     """Keep the state, written atomically."""
     sleeps = {
-        k: [s.night, s.start_ms, s.end_ms, s.minutes, s.main, s.duplicate]
+        k: [s.night, s.start_ms, s.end_ms, s.minutes, s.main, s.duplicate, s.version, s.staged]
         for k, s in sorted(state.sleeps.items())
     }
     write_json(path, {"files": dict(sorted(state.files.items())), "sleeps": sleeps})
