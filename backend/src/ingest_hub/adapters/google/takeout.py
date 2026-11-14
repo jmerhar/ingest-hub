@@ -4,7 +4,8 @@ A Takeout of Google Health (Fitbit and Pixel Watch data) is one zip, or several 
 ``-1-002.zip``, …) that each hold different files of the same export; the files are CSV under
 ``Takeout/Google Health/``. Every export repeats the whole history.
 
-What is imported, each table named ``<prefix>`` + its folder in snake case, which is also the
+Every point is tagged ``person``, whose data it is, from the configuration. What is imported,
+each table named ``<prefix>`` + its folder in snake case, which is also the
 Google Health API's name for the data type (``Daily Resting Heart Rate`` →
 ``google_daily_resting_heart_rate``), with a field per column, its header in snake case
 (``average heart rate variability milliseconds`` → ``average_heart_rate_variability_milliseconds``):
@@ -183,6 +184,8 @@ class TakeoutParams(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: Whose data it is, written as the ``person`` tag of every point.
+    person: str = Field(pattern=r"^[A-Za-z0-9_.-]+$")
     #: The folder export zips are dropped into; created when missing.
     inbox: Path
     table_prefix: str = Field("google_", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -278,6 +281,7 @@ class Points:
 
     def __init__(self, params: TakeoutParams, state: State) -> None:
         self._prefix = params.table_prefix
+        self._person = params.person
         self._zone = ZoneInfo(params.timezone)
         self._state = state
         self.counts: Counter[str] = Counter()
@@ -291,7 +295,7 @@ class Points:
         self.counts[table] += 1
         return Point(
             self._prefix + table,
-            tuple(sorted(tags.items())),
+            tuple(sorted({**tags, "person": self._person}.items())),
             ms,
             fields,
             precision=Precision.MILLISECONDS,

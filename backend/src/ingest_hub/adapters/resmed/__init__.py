@@ -11,8 +11,8 @@ An AirSense 10 or 11 writes everything it records to its SD card, as EDF files (
   and SpO2 every second from an oximeter, and ``_BRP.edf`` the flow and pressure waveforms at
   25 Hz, which are not imported.
 
-What is written, all at millisecond precision and tagged ``device`` (the serial number the
-files carry) and ``night``:
+What is written, all at millisecond precision and tagged ``person`` (whose CPAP it is, from
+the configuration), ``device`` (the serial number the files carry) and ``night``:
 
 - ``<prefix>night``: one point per STR day, at its start (noon), every value of the day as a
   field: its signal's label in snake case (``Leak.95`` → ``leak_95``, ``S.EPR.Level`` →
@@ -40,6 +40,14 @@ for a copy without it the last card's, or UTC when no card has had one. That set
 offset, which an AirSense 11 keeps all year without summer time, so it reads the files' times
 as the device meant them. A point's time depends on the zone, so a different zone for a night
 already imported writes a second copy of it beside the first.
+
+The device's clock drifts, and it has no setting to correct it. ``clock`` lists moments it was
+compared with the true time, such as a session started at a noted time, whose file names give the
+device's side; the difference is interpolated between them and extended in a line beyond them.
+Mask periods, events and the series are corrected; a night's summary keeps the device's noon, and
+``night`` the device's own day. Each night keeps the correction it was first imported with, kept
+in the state directory, so importing it again writes the same points; an anchor added later
+corrects only the nights imported after it.
 
 A card arrives either as a zip in ``inbox`` (uploaded on the status page, or dropped there),
 moved to ``imported/`` beside it once its points are safe or to ``failed/`` when it is not a card
@@ -131,11 +139,48 @@ def parse_zone(text: str) -> dt.tzinfo:
         raise ValueError(f"unknown time zone {text!r}") from error
 
 
+class ClockAnchor(BaseModel):
+    """A moment the device's clock was compared with the true local time."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: What the device's clock said, as the card's file names give it.
+    device: dt.datetime
+    #: The true local time at that moment.
+    actual: dt.datetime
+
+    @field_validator("device", "actual")
+    @classmethod
+    def _local(cls, value: dt.datetime) -> dt.datetime:
+        if value.tzinfo is not None:
+            raise ValueError("a local time, without a zone")
+        return value
+
+
+def clock_correction(anchors: list[ClockAnchor], device: dt.datetime) -> dt.timedelta:
+    """What to add to a moment on the device's clock to make it true: the anchors' differences,
+    interpolated between them and extended in a line beyond them; one anchor's difference
+    everywhere; nothing without anchors."""
+    points = sorted(((a.device, a.actual - a.device) for a in anchors), key=lambda p: p[0])
+    if not points:
+        return dt.timedelta(0)
+    if len(points) == 1:
+        return points[0][1]
+    index = 1
+    while index < len(points) - 1 and device > points[index][0]:
+        index += 1
+    (t0, c0), (t1, c1) = points[index - 1], points[index]
+    fraction = (device - t0) / (t1 - t0)
+    return c0 + (c1 - c0) * fraction
+
+
 class ResmedParams(BaseModel):
     """A ResMed SD card source's ``params`` in the configuration file."""
 
     model_config = ConfigDict(extra="forbid")
 
+    #: Whose CPAP it is, written as the ``person`` tag of every point.
+    person: str = Field(pattern=r"^[A-Za-z0-9_.-]+$")
     #: The folder zips of the card are dropped into; created when missing.
     inbox: Path
     #: A folder holding a copy of the card, read in place.
@@ -144,6 +189,15 @@ class ResmedParams(BaseModel):
     scan_minutes: float = Field(10, gt=0)
     #: The zone the device's clock is read in; unset, the card's ``TimeZoneOffset``.
     timezone: str | None = None
+    #: Moments the device's clock was checked against the true time, to correct its drift.
+    clock: list[ClockAnchor] = []
+
+    @field_validator("clock")
+    @classmethod
+    def _distinct(cls, value: list[ClockAnchor]) -> list[ClockAnchor]:
+        if len({anchor.device for anchor in value}) != len(value):
+            raise ValueError("two anchors at the same device time")
+        return value
 
     @field_validator("timezone")
     @classmethod
@@ -303,14 +357,33 @@ def card_offset(raw: bytes) -> str | None:
 class Points:
     """Turns a card's files into points."""
 
-    def __init__(self, prefix: str, zone: dt.tzinfo) -> None:
+    def __init__(
+        self,
+        prefix: str,
+        zone: dt.tzinfo,
+        person: str,
+        anchors: list[ClockAnchor] | None = None,
+        corrections: dict[str, int] | None = None,
+    ) -> None:
         self._prefix = prefix
         self._zone = zone
+        self._person = person
+        self._anchors = anchors or []
+        #: The correction of each night's times in milliseconds, kept once it is first used, so
+        #: a night imported again lands on the same times; adds to it in place.
+        self._corrections = {} if corrections is None else corrections
         self.counts: Counter[str] = Counter()
         self.nights: set[str] = set()
 
     def _ms(self, local: dt.datetime) -> int:
         return int(local.replace(tzinfo=self._zone).timestamp() * 1000)
+
+    def _true(self, night: str, device: dt.datetime) -> dt.datetime:
+        """A moment of a night on the device's clock, corrected for the clock's drift."""
+        if night not in self._corrections:
+            correction = clock_correction(self._anchors, device)
+            self._corrections[night] = round(correction.total_seconds() * 1000)
+        return device + dt.timedelta(milliseconds=self._corrections[night])
 
     def _point(
         self, table: str, tags: dict[str, str], local: dt.datetime, fields: dict[str, FieldValue]
@@ -318,7 +391,7 @@ class Points:
         self.counts[table] += 1
         return Point(
             self._prefix + table,
-            tuple(sorted(tags.items())),
+            tuple(sorted({**tags, "person": self._person}.items())),
             self._ms(local),
             fields,
             precision=Precision.MILLISECONDS,
@@ -362,7 +435,7 @@ class Points:
                 if on is not None and off is not None and off >= on:
                     periods[on] = periods.get(on, 0.0) + off - on
             for on, minutes in periods.items():
-                start = local + dt.timedelta(minutes=on)
+                start = self._true(tags["night"], local + dt.timedelta(minutes=on))
                 yield self._point("mask", tags, start, {"minutes": minutes})
 
     def _events(self, edf: Edf) -> Iterator[Point]:
@@ -370,7 +443,7 @@ class Points:
         for annotation in edf.annotations():
             if annotation.text.lower() in NOT_EVENTS:
                 continue
-            moment = edf.start + dt.timedelta(seconds=annotation.onset)
+            moment = self._true(tags["night"], edf.start + dt.timedelta(seconds=annotation.onset))
             self.nights.add(tags["night"])
             yield self._point(
                 "event",
@@ -395,9 +468,8 @@ class Points:
         if by_time:
             self.nights.add(tags["night"])
         for seconds in sorted(by_time):
-            yield self._point(
-                table, tags, edf.start + dt.timedelta(seconds=seconds), by_time[seconds]
-            )
+            moment = self._true(tags["night"], edf.start + dt.timedelta(seconds=seconds))
+            yield self._point(table, tags, moment, by_time[seconds])
 
 
 def _serial(edf: Edf) -> str:
@@ -494,7 +566,13 @@ class ResmedSource:
         done = state.files
         files = card.files()
         fingerprints = await asyncio.to_thread(lambda: {f: card.fingerprint(f) for f in files})
-        builder = Points(self._params.table_prefix, self._zone(card, files, state))
+        builder = Points(
+            self._params.table_prefix,
+            self._zone(card, files, state),
+            self._params.person,
+            self._params.clock,
+            state.corrections,
+        )
         changed = 0
         skipped = 0
         try:
@@ -533,10 +611,13 @@ class ResmedSource:
 @dataclass
 class State:
     """What the source keeps between imports: the fingerprints of the files imported so far, by
-    path, and the last ``TimeZoneOffset`` a card gave, for a copy without its settings."""
+    path, the last ``TimeZoneOffset`` a card gave, for a copy without its settings, and the clock
+    correction each night was imported with."""
 
     files: dict[str, str] = field(default_factory=dict)
     offset: str | None = None
+    #: Each night's clock correction in milliseconds, as first applied.
+    corrections: dict[str, int] = field(default_factory=dict)
 
 
 def _load_state(path: Path) -> State:
@@ -545,7 +626,9 @@ def _load_state(path: Path) -> State:
         data = json.loads(path.read_text(encoding="utf-8"))
         files = {str(k): str(v) for k, v in data["files"].items()}
         offset = data.get("offset")
-        return State(files, offset if isinstance(offset, str) and OFFSET.match(offset) else None)
+        corrections = {str(k): int(v) for k, v in data.get("corrections", {}).items()}
+        offset = offset if isinstance(offset, str) and OFFSET.match(offset) else None
+        return State(files, offset, corrections)
     except FileNotFoundError:
         return State()
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
@@ -555,7 +638,12 @@ def _load_state(path: Path) -> State:
 
 def _save_state(path: Path, state: State) -> None:
     """Keep the state, written atomically."""
-    write_json(path, {"files": dict(sorted(state.files.items())), "offset": state.offset})
+    data = {
+        "files": dict(sorted(state.files.items())),
+        "offset": state.offset,
+        "corrections": dict(sorted(state.corrections.items())),
+    }
+    write_json(path, data)
 
 
 def build(params: ResmedParams, _client: httpx2.AsyncClient, _name: str = "") -> ResmedSource:

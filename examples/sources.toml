@@ -143,11 +143,14 @@ kind = "resmed_sd"
 destination = "health"
 
 [sources.cpap.params]
+person = "alex"                     # tagged on every point; one source per person
 inbox = "/data/inbox/cpap"
 # card = "/data/cards/cpap"         # read in place, never changed
 # table_prefix = "cpap_"
 # scan_minutes = 10
 # timezone = "+01:00"               # the device's clock; by default the card's TimeZoneOffset
+# The device's clock drifts: moments it was compared with the true local time.
+# clock = [{ device = 2026-11-14T02:17:14, actual = 2026-11-14T02:09:00 }]
 
 # Google Health (Fitbit, Pixel Watch) from Google Takeout exports: upload the zips on the status
 # page or drop them into the inbox.
@@ -156,6 +159,7 @@ kind = "google_takeout"
 destination = "health"
 
 [sources.health.params]
+person = "alex"                     # tagged on every point; one source per person
 inbox = "/data/inbox/takeout"
 timezone = "Europe/Amsterdam"       # for civil dates and samples without an offset
 # heart_rate_minutes = true         # heart rate per minute: mean, min, max

@@ -50,7 +50,12 @@ class Stop(Exception):
 
 class Harness:
     def __init__(self, tmp_path: Path, **overrides) -> None:
-        params = {"inbox": str(tmp_path / "inbox"), "timezone": "Europe/Amsterdam", **overrides}
+        params = {
+            "inbox": str(tmp_path / "inbox"),
+            "person": "alex",
+            "timezone": "Europe/Amsterdam",
+            **overrides,
+        }
         self.params = TakeoutParams.model_validate(params)
         self.inbox = self.params.inbox
         self.inbox.mkdir(parents=True, exist_ok=True)
@@ -97,7 +102,10 @@ def table(points: list[Point], name: str) -> list[Point]:
 
 
 def tags(point: Point) -> dict[str, str]:
-    return dict(point.tags)
+    """A point's tags but ``person``, which every point has."""
+    found = dict(point.tags)
+    assert found.pop("person") == "alex"
+    return found
 
 
 EXPECTED = {
@@ -124,6 +132,7 @@ async def test_an_export_split_over_two_zips_is_imported_as_one(tmp_path, caplog
     assert await harness.source.scan(harness.context)
     points = harness.points
     assert Counter(p.table for p in points) == EXPECTED
+    assert {dict(p.tags)["person"] for p in points} == {"alex"}
     assert harness.problems == []
     assert sorted(p.name for p in (harness.inbox / "imported").iterdir()) == [
         "takeout-1-001.zip",
@@ -446,13 +455,16 @@ async def test_a_session_without_an_id_is_skipped(tmp_path):
 
 def test_the_adapter_is_registered_and_validates_its_params(tmp_path):
     adapter = ADAPTERS["google_takeout"]
-    built = adapter.build(adapter.params.model_validate({"inbox": str(tmp_path)}), None, "x")
+    valid = {"inbox": str(tmp_path), "person": "alex"}
+    built = adapter.build(adapter.params.model_validate(valid), None, "x")
     assert isinstance(built, TakeoutSource) and isinstance(built, AcceptsFiles)
     assert built.file_suffixes == (".zip",) and built.upload_max_bytes == 2 * 1024**3
     with pytest.raises(ValidationError, match="inbox"):
         TakeoutParams.model_validate({})
     with pytest.raises(ValidationError, match="timezone"):
-        TakeoutParams.model_validate({"inbox": str(tmp_path), "timezone": "Mars/Olympus"})
+        TakeoutParams.model_validate({**valid, "timezone": "Mars/Olympus"})
+    with pytest.raises(ValidationError, match="person"):
+        TakeoutParams.model_validate({"inbox": str(tmp_path)})
 
 
 @pytest.mark.parametrize(
@@ -542,7 +554,7 @@ def test_files_are_known_by_their_path_in_the_export(path, heart_rate, kind):
 
 
 def builder(tmp_path: Path) -> takeout.Points:
-    return takeout.Points(TakeoutParams(inbox=tmp_path, timezone="UTC"), takeout.State())
+    return takeout.Points(TakeoutParams(inbox=tmp_path, person="alex"), takeout.State())
 
 
 def sleep_row(sleep_id: str, start: str, end: str, minutes: str, **overrides: str) -> dict:

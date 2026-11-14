@@ -52,7 +52,8 @@ class Stop(Exception):
 
 class Harness:
     def __init__(self, tmp_path: Path, **overrides) -> None:
-        self.params = ResmedParams.model_validate({"inbox": str(tmp_path / "inbox"), **overrides})
+        params = {"inbox": str(tmp_path / "inbox"), "person": "alex", **overrides}
+        self.params = ResmedParams.model_validate(params)
         self.inbox = self.params.inbox
         self.inbox.mkdir(parents=True, exist_ok=True)
         self.state = tmp_path / "state"
@@ -113,12 +114,12 @@ async def test_a_card_becomes_nights_mask_periods_events_and_detail(tmp_path, ca
         "cpap_event": 7,
         "cpap_detail": 120,
     }
-    assert {tags(p)["device"] for p in points} == {SERIAL}
+    assert {(tags(p)["device"], tags(p)["person"]) for p in points} == {(SERIAL, "alex")}
 
     first, rest, second = table(points, "cpap_night")
     # The card's +01:00: STR's days start at noon on the device's clock.
     assert first.timestamp == utc(2026, 10, 10, 11)
-    assert tags(first) == {"device": SERIAL, "night": "2026-10-10"}
+    assert tags(first) == {"device": SERIAL, "night": "2026-10-10", "person": "alex"}
     assert first.fields == {
         "mask_events": 1.0,
         "duration": 2.0,
@@ -448,7 +449,7 @@ def test_mask_periods_that_start_together_are_one_and_backwards_ones_are_left_ou
         str_day(20736, [(700, 650), (800, 800), (800, 800), (800, 814), (820, 820)], duration=1)
     ]
     summary = read_edf(edf(dt.datetime(2026, 10, 10, 12), 86400, STR_SIGNALS, days))
-    points = list(resmed.Points("cpap_", dt.UTC).build("STR", summary))
+    points = list(resmed.Points("cpap_", dt.UTC, "alex").build("STR", summary))
     assert [(p.timestamp, p.fields) for p in table(points, "cpap_mask")] == [
         (utc(2026, 10, 11, 1, 20), {"minutes": 14.0}),  # three periods starting together
         (utc(2026, 10, 11, 1, 40), {"minutes": 0.0}),
@@ -457,15 +458,20 @@ def test_mask_periods_that_start_together_are_one_and_backwards_ones_are_left_ou
 
 def test_the_adapter_is_registered_and_validates_its_params(tmp_path):
     adapter = ADAPTERS["resmed_sd"]
-    built = adapter.build(adapter.params.model_validate({"inbox": str(tmp_path)}), None, "x")
+    valid = {"inbox": str(tmp_path), "person": "alex"}
+    built = adapter.build(adapter.params.model_validate(valid), None, "x")
     assert isinstance(built, ResmedSource) and isinstance(built, AcceptsFiles)
     assert built.file_suffixes == (".zip",)
     with pytest.raises(ValidationError, match="inbox"):
         ResmedParams.model_validate({})
-    assert ResmedParams.model_validate({"inbox": str(tmp_path), "timezone": None}).timezone is None
+    assert ResmedParams.model_validate({**valid, "timezone": None}).timezone is None
+    with pytest.raises(ValidationError, match="person"):
+        ResmedParams.model_validate({"inbox": str(tmp_path)})
+    with pytest.raises(ValidationError, match="person"):
+        ResmedParams.model_validate({**valid, "person": "two words"})
     for zone in ("Mars/Olympus", "+24:00", "1:00"):
         with pytest.raises(ValidationError, match="timezone"):
-            ResmedParams.model_validate({"inbox": str(tmp_path), "timezone": zone})
+            ResmedParams.model_validate({**valid, "timezone": zone})
 
 
 @pytest.mark.parametrize(
@@ -564,3 +570,104 @@ def test_a_zip_s_card_root_is_where_its_str_or_datalog_is(names, root):
 )
 def test_the_card_s_offset_is_read_from_its_settings(raw, offset):
     assert card_offset(raw) == offset
+
+
+def anchor(device: str, actual: str) -> resmed.ClockAnchor:
+    return resmed.ClockAnchor(
+        device=dt.datetime.fromisoformat(device), actual=dt.datetime.fromisoformat(actual)
+    )
+
+
+@pytest.mark.parametrize(
+    ("anchors", "device", "seconds"),
+    [
+        ([], "2026-10-10T23:00:00", 0),
+        ([("2026-11-14T02:17:14", "2026-11-14T02:09:00")], "2025-11-19T12:00:00", -494),
+        # Right at set-up, 8 min 14 s fast a year later: in a line between, and beyond them.
+        (
+            [
+                ("2025-11-14T02:17:14", "2025-11-14T02:17:14"),
+                ("2026-11-14T02:17:14", "2026-11-14T02:09:00"),
+            ],
+            "2026-05-15T14:17:14",
+            -247,
+        ),
+        (
+            [
+                ("2025-11-14T02:17:14", "2025-11-14T02:17:14"),
+                ("2026-11-14T02:17:14", "2026-11-14T02:09:00"),
+            ],
+            "2027-11-14T02:17:14",
+            -988,
+        ),
+        (
+            [
+                ("2025-11-14T02:17:14", "2025-11-14T02:17:14"),
+                ("2026-11-14T02:17:14", "2026-11-14T02:09:00"),
+            ],
+            "2024-11-14T02:17:14",
+            494,
+        ),
+        # With three, each stretch between two has its own rate.
+        (
+            [
+                ("2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+                ("2026-01-11T00:00:00", "2026-01-11T00:00:10"),
+                ("2026-01-21T00:00:00", "2026-01-21T00:00:50"),
+            ],
+            "2026-01-16T00:00:00",
+            30,
+        ),
+    ],
+)
+def test_the_clock_correction_runs_in_a_line_through_the_anchors(anchors, device, seconds):
+    result = resmed.clock_correction(
+        [anchor(*a) for a in anchors], dt.datetime.fromisoformat(device)
+    )
+    assert round(result.total_seconds()) == seconds
+
+
+def test_anchors_are_local_times_at_distinct_device_times(tmp_path):
+    valid = {"inbox": str(tmp_path), "person": "alex"}
+    one = {"device": "2026-11-14T02:17:14", "actual": "2026-11-14T02:09:00"}
+    assert ResmedParams.model_validate({**valid, "clock": [one]}).clock[0].actual.minute == 9
+    with pytest.raises(ValidationError, match="without a zone"):
+        ResmedParams.model_validate({**valid, "clock": [{**one, "actual": "2026-11-14T02:09:00Z"}]})
+    with pytest.raises(ValidationError, match="same device time"):
+        ResmedParams.model_validate(
+            {**valid, "clock": [one, {**one, "actual": "2026-11-14T02:10:00"}]}
+        )
+
+
+async def test_the_clock_correction_moves_moments_but_not_the_nights(tmp_path):
+    fast = [{"device": "2026-10-12T00:00:00", "actual": "2026-10-11T23:51:46"}]  # 8 min 14 s
+    harness = Harness(tmp_path, clock=fast)
+    write_zip(harness.inbox / "card.zip", card_files())
+    await harness.source.scan(harness.context)
+    points = harness.points
+    shift = 494_000
+    assert table(points, "cpap_night")[0].timestamp == utc(2026, 10, 10, 11)  # the device's noon
+    assert table(points, "cpap_mask")[0].timestamp == utc(2026, 10, 10, 22) - shift
+    assert table(points, "cpap_event")[0].timestamp == utc(2026, 10, 10, 22, 0, 30) - shift
+    assert table(points, "cpap_detail")[0].timestamp == utc(2026, 10, 10, 22, 0, 10) - shift
+    assert {tags(p)["night"] for p in table(points, "cpap_detail")} == {"2026-10-10", "2026-10-13"}
+
+
+async def test_a_night_keeps_the_correction_it_was_first_imported_with(tmp_path):
+    first = [{"device": "2026-10-12T00:00:00", "actual": "2026-10-11T23:51:46"}]
+    harness = Harness(tmp_path, clock=first)
+    write_zip(harness.inbox / "a.zip", card_files())
+    await harness.source.scan(harness.context)
+    harness.take()
+    later = [{"device": "2026-10-12T00:00:00", "actual": "2026-10-11T23:55:00"}]  # 5 min fast
+    harness.source = ResmedSource(harness.params.model_copy(update={"clock": [anchor(**later[0])]}))
+    write_zip(harness.inbox / "b.zip", card_files(extra_night=True))
+    await harness.source.scan(harness.context)
+    masks = {tags(p)["night"]: p.timestamp for p in table(harness.points, "cpap_mask")}
+    # STR changed, so every day's mask periods are written again, on the times they had.
+    assert masks["2026-10-10"] == utc(2026, 10, 10, 22) - 494_000
+    assert masks["2026-10-14"] == utc(2026, 10, 14, 21) - 300_000
+    detail = table(harness.points, "cpap_detail")
+    assert detail[0].timestamp == utc(2026, 10, 14, 21) - 300_000
+    state = json.loads((harness.state / STATE_FILE).read_text())
+    assert state["corrections"]["2026-10-10"] == -494_000

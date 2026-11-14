@@ -291,7 +291,9 @@ import everything again.
 | `cpap_detail` | `*_PLD.edf`: every 2 s | `night` | `mask_press`, `press`, `epr_press` (cmH2O), `leak` (L/s), `resp_rate`, `tid_vol` (L), `min_vent` (L/min), `snore`, `flow_lim` |
 | `cpap_oximetry` | `*_SA2.edf`: every second, when an oximeter recorded | `night` | `pulse`, `spo2` |
 
-Every point is also tagged `device`, the serial number the files carry; `table_prefix` (`cpap_`)
+Every point is also tagged `person`, whose CPAP it is (`person` in `params`, required, so the
+data of several people can share a database), and `device`, the serial number the files carry;
+`table_prefix` (`cpap_`)
 renames the tables. A field is its signal's label in snake case, without its rate: `AHI` → `ahi`,
 `Leak.95` → `leak_95`, `S.EPR.Level` → `s_epr_level`, `MaskPress.2s` → `mask_press`. Values are in
 the files' units: leak is in L/s, where ResMed's app shows L/min. A night holds the therapy minutes
@@ -314,6 +316,26 @@ offset all year and wherever it is, without summer time, so the default reads it
 where an IANA zone with summer time would put summer nights an hour off. Set `timezone` before the
 first import: a point's time depends on it, so a night imported again in another zone is written a
 second time, an hour or more from the first.
+
+The device's clock drifts, by minutes a year, and has no setting to correct it. To check it, note
+the true time when you start a session; the session's file names in `DATALOG` give the device's
+time for the same moment, to the second. `clock` lists such moments, and the source corrects the
+times between them in a line, and beyond them as the nearest two continue:
+
+```toml
+[sources.cpap.params]
+person = "alex"
+inbox = "/data/inbox/cpap"
+clock = [
+  { device = 2025-11-19T22:00:00, actual = 2025-11-19T22:00:00 },   # right when it was new
+  { device = 2026-11-14T02:17:14, actual = 2026-11-14T02:09:00 },
+]
+```
+
+Mask periods, events and the 2-second series are corrected. A night's summary keeps its noon, and
+`night` stays the device's own day. Each night keeps the correction it was first imported with
+(the state directory remembers it), so importing it again writes the same points; a moment added
+to `clock` later corrects the nights imported after it.
 
 ### Google Takeout
 
@@ -339,6 +361,7 @@ written again over the old ones.
 | `google_sleep_score` | one point per scored sleep, at its end | `night` |
 | `google_heart_rate_minute` | with `heart_rate_minutes = true`: heart rate per minute, `mean`, `min`, `max`, `count` | `source` |
 
+Every point is also tagged `person`, whose data it is (`person` in `params`, required).
 `table_prefix` (`google_`) renames the tables; the rest of a name is the export's folder in snake
 case, which is also the Google Health API's name for the data. A field is its column's header in
 snake case: `average heart rate variability milliseconds` →
@@ -374,6 +397,7 @@ night in each.
 
 ```toml
 [sources.health.params]
+person = "alex"
 inbox = "/data/inbox/takeout"
 timezone = "Europe/Amsterdam"
 # heart_rate_minutes = true
