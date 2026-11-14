@@ -462,6 +462,7 @@ def test_the_adapter_is_registered_and_validates_its_params(tmp_path):
     built = adapter.build(adapter.params.model_validate(valid), None, "x")
     assert isinstance(built, ResmedSource) and isinstance(built, AcceptsFiles)
     assert built.file_suffixes == (".zip",)
+    assert "`zip -r card.zip . -x '*_BRP.edf'`" in built.upload_help
     with pytest.raises(ValidationError, match="inbox"):
         ResmedParams.model_validate({})
     assert ResmedParams.model_validate({**valid, "timezone": None}).timezone is None

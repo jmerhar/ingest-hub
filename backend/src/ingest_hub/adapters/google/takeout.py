@@ -643,6 +643,21 @@ class TakeoutSource:
         self.inbox = params.inbox
         self._woken = asyncio.Event()
 
+    @property
+    def upload_help(self) -> str:
+        """What to upload, shown with the upload button."""
+        text = (
+            "A Google Takeout export of Google Health (takeout.google.com, as a `.zip`); upload "
+            "every part of a split export. Each export repeats the history; only changed files "
+            "are imported."
+        )
+        if not self._params.api_data:
+            text += (
+                " Only what the Google Health API lacks is imported: sleep scores, readiness, "
+                "stress, the cardio workload ratio and the demographic VO2 max."
+            )
+        return text
+
     def wake(self) -> None:
         """Scan now rather than at the next scan, for a file just saved in the inbox."""
         self._woken.set()

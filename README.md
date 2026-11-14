@@ -52,7 +52,7 @@ With `WEB_PORT` set, `ingest-hub run` also serves:
 - `/`: a page showing each source's state, last success and error, points and batches written,
   spool backlog, heartbeat, and how far each of its streams is complete, refreshed every 15 s. A
   source that imports files from a folder (`vaillant_export`, `resmed_sd`, `google_takeout`) has
-  an upload button;
+  an upload button, with what to upload and the largest file it takes;
 - `/api/status`: the same as JSON;
 - `POST /api/sources/NAME/files`: save the request body in that source's inbox, named by the upload
   time and the `X-Filename` header (required), and import it at once; at most 64 MiB unless the

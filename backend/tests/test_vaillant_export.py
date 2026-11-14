@@ -394,6 +394,10 @@ def test_the_adapter_is_registered_and_validates_its_params(tmp_path):
     adapter = ADAPTERS["vaillant_export"]
     built = adapter.build(adapter.params.model_validate({"inbox": str(tmp_path)}), None, "x")
     assert isinstance(built, VaillantExportSource)
+    assert "EU Data Act export (`.json`)" in built.upload_help
+    assert "fetches" not in built.upload_help
+    fetching = VaillantExportSource(params(tmp_path), portal=object())  # type: ignore[arg-type]
+    assert "also fetches the previous day's export itself" in fetching.upload_help
     with pytest.raises(ValidationError, match="inbox"):
         VaillantExportParams.model_validate({})
     with pytest.raises(ValidationError, match="scan_minutes"):

@@ -169,6 +169,8 @@ inbox = "{inbox}"
         ):
             (source,) = (await client.get("/api/status")).json()["sources"]
             assert source["accepts_files"] == [".json"]
+            assert source["upload_max_bytes"] == web.UPLOAD_MAX_BYTES
+            assert "EU Data Act export (`.json`)" in source["upload_help"]
 
             def post(name, body=b"[]", headers=None):
                 return client.post(
@@ -264,3 +266,24 @@ def test_a_source_can_set_its_own_upload_limit(limit, expected):
 def test_saved_names(filename, saved):
     moment = 1793869200.0  # 2026-11-05 09:00:00 UTC
     assert web.saved_name(filename, (".json",), moment) == saved
+
+
+class Plain:
+    async def run(self, context) -> None:
+        pass
+
+
+def test_a_source_s_upload_help_and_limit_are_in_its_status():
+    assert web._upload(Plain()) == {
+        "accepts_files": None,
+        "upload_max_bytes": None,
+        "upload_help": None,
+    }
+    helped = Inbox(2**31)
+    helped.upload_help = "A `.zip` of it."
+    assert web._upload(helped) == {
+        "accepts_files": [".zip"],
+        "upload_max_bytes": 2**31,
+        "upload_help": "A `.zip` of it.",
+    }
+    assert web._upload(Inbox())["upload_help"] is None

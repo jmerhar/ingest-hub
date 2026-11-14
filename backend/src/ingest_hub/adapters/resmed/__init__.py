@@ -493,6 +493,11 @@ class ResmedSource:
     """Imports copies of a ResMed SD card: zips in an inbox, and a folder read in place."""
 
     file_suffixes = (".zip",)
+    upload_help = (
+        "A zip of the CPAP's SD card. Leave out the 25 Hz waveform files, which make a card too "
+        "large: in the card's folder, run `zip -r card.zip . -x '*_BRP.edf'`. A card repeats its "
+        "old nights; only new or changed files are imported."
+    )
 
     def __init__(self, params: ResmedParams) -> None:
         self._params = params

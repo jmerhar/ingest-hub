@@ -420,6 +420,17 @@ class VaillantExportSource:
         #: When a fetch may next be tried.
         self._next_try = float("-inf")
 
+    @property
+    def upload_help(self) -> str:
+        """What to upload, shown with the upload button."""
+        text = (
+            "A myVAILLANT EU Data Act export (`.json`) from eu-data-act.vaillant-group.com. "
+            "Exports may overlap: the same points are written again."
+        )
+        if self._portal is not None:
+            text += " This source also fetches the previous day's export itself."
+        return text
+
     def wake(self) -> None:
         """Scan the inbox now rather than at the next scan, for a file just saved there."""
         self._woken.set()

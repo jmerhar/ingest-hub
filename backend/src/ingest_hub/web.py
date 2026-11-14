@@ -9,7 +9,8 @@ The application's lifespan runs the sources and alerts, so one process both coll
 - ``GET /api/status``: every source's status, the destinations by kind and database, and the
   version. No URL, token or other credential appears in it.
 - ``POST /api/sources/{name}/files``: hand a file to a source that imports files from a folder
-  (``accepts_files`` in its status), as the request body, with its name in ``X-Filename``. It is
+  (``accepts_files`` in its status, with ``upload_max_bytes`` and ``upload_help``), as the request
+  body, with its name in ``X-Filename``. It is
   saved in the source's inbox, under the upload time and that name, and the source is woken to
   import it; the answer gives the saved name and the server's time (``at``), which the source's
   next ``last_success`` or ``last_error_at`` follows. The body is written to disk as it arrives,
@@ -76,15 +77,24 @@ def status_document(assembly: Assembly, revision: str | None) -> dict[str, Any]:
             for name, d in assembly.config.destinations.items()
         },
         "sources": [
-            {**source, "accepts_files": _accepts(assembly.runtime.source(source["name"]))}
+            {**source, **_upload(assembly.runtime.source(source["name"]))}
             for source in snapshot["sources"]
         ],
     }
 
 
-def _accepts(source: object) -> list[str] | None:
-    """The name endings of the files a source can be handed, or None when it takes none."""
-    return list(source.file_suffixes) if isinstance(source, AcceptsFiles) else None
+def _upload(source: object) -> dict[str, Any]:
+    """What the status says about handing a source files: the name endings it takes
+    (``accepts_files``), the largest file (``upload_max_bytes``) and what to hand it
+    (``upload_help``); all None when it takes none."""
+    if not isinstance(source, AcceptsFiles):
+        return {"accepts_files": None, "upload_max_bytes": None, "upload_help": None}
+    help_text = getattr(source, "upload_help", None)
+    return {
+        "accepts_files": list(source.file_suffixes),
+        "upload_max_bytes": upload_limit(source),
+        "upload_help": help_text if isinstance(help_text, str) and help_text else None,
+    }
 
 
 def saved_name(filename: str, suffixes: tuple[str, ...], moment: float) -> str | None:

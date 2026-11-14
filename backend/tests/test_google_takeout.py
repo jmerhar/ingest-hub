@@ -464,6 +464,10 @@ def test_the_adapter_is_registered_and_validates_its_params(tmp_path):
     built = adapter.build(adapter.params.model_validate(valid), None, "x")
     assert isinstance(built, TakeoutSource) and isinstance(built, AcceptsFiles)
     assert built.file_suffixes == (".zip",) and built.upload_max_bytes == 2 * 1024**3
+    assert "every part of a split export" in built.upload_help
+    assert "Only what the Google Health API lacks" not in built.upload_help
+    lean = adapter.build(adapter.params.model_validate({**valid, "api_data": False}), None, "x")
+    assert "Only what the Google Health API lacks is imported" in lean.upload_help
     with pytest.raises(ValidationError, match="inbox"):
         TakeoutParams.model_validate({})
     with pytest.raises(ValidationError, match="timezone"):
