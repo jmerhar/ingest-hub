@@ -351,9 +351,10 @@ async def test_a_restart_cuts_the_pause_after_a_failure_short(tmp_path):
             await wait_for(lambda: runtime.statuses[0].state == "backing-off")
             assert len(runs) == 1
             runtime.restart("p")
-            await wait_for(lambda: len(runs) == 2)
+            # The second run fails too and waits out its own long pause, counted as a restart.
+            await wait_for(lambda: runtime.statuses[0].restarts == 2)
         finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-    assert runtime.statuses[0].restarts == 2
+    assert len(runs) == 2
