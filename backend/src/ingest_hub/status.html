@@ -92,6 +92,8 @@
 <script>
 "use strict";
 const REFRESH_MS = 15000;
+// Every write carries this, or the server refuses it as possibly from another site.
+const WRITE_HEADERS = { "X-Requested-With": "ingest-hub" };
 // The outcome of the latest upload per source, kept here because the cards are rebuilt on every
 // refresh.
 const uploads = {};
@@ -139,10 +141,10 @@ async function upload(source, file) {
   refresh();
   try {
     const response = await fetch("api/sources/" + encodeURIComponent(source) + "/files", {
-      method: "POST", body: file, headers: { "X-Filename": file.name },
+      method: "POST", body: file, headers: { "X-Filename": file.name, ...WRITE_HEADERS },
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || "HTTP " + response.status);
+    if (!response.ok) throw new Error(body.error || body.detail || "HTTP " + response.status);
     uploads[source] = { saved: body.saved, at: body.at };
     // The import takes a moment; look again soon rather than at the next regular refresh.
     setTimeout(refresh, 1500);
@@ -155,10 +157,11 @@ async function upload(source, file) {
 
 async function postJson(path, body) {
   const response = await fetch(path, {
-    method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json" },
+    method: "POST", body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", ...WRITE_HEADERS },
   });
   const answer = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(answer.error || "HTTP " + response.status);
+  if (!response.ok) throw new Error(answer.error || answer.detail || "HTTP " + response.status);
   return answer;
 }
 

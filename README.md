@@ -36,6 +36,7 @@ is in `./data`, and `./secrets` is mounted read-only at `/run/secrets`.
 | `CONFIG_FILE` | `$DATA_DIR/config/sources.toml` | The configuration file. |
 | `SPOOL_MAX_BYTES` | 256 MiB | Each source's spool limit; beyond it the oldest batches are dropped. |
 | `WEB_PORT` | `8000` in the image | The status page and `/health`; unset, `run` serves nothing and the health probe reads the status file. |
+| `PUBLIC_URL` | | The address the status page is reached at, when a proxy in front of it does not pass the browser's host on; writes from any other origin are refused. |
 | `LOG_LEVEL` | `INFO` | |
 | `TZ` | `UTC` | |
 
@@ -61,12 +62,16 @@ With `WEB_PORT` set, `ingest-hub run` also serves:
 - `POST /api/sources/NAME/files`: save the request body in that source's inbox, named by the upload
   time and the `X-Filename` header (required), and import it at once; at most 64 MiB unless the
   source allows more, written to disk as it arrives;
-- `POST /api/sources/NAME/sign-in` (JSON): start signing that source in, replacing a sign-in
+- `POST /api/sources/NAME/sign-in`: start signing that source in, replacing a sign-in
   started before; the answer and the source's `sign_in.current` in the status say what to open.
   When the step asks for no answer it finishes by itself; otherwise `POST
   /api/sources/NAME/sign-in/answer` with `{"answer": "…"}` finishes it;
 - `/health`: 200 while the runtime is running and refreshing its status, 503 otherwise. It does
   not depend on any destination, since restarting the process would not bring a database back.
+
+Every `POST` carries `X-Requested-With: ingest-hub`, and an `Origin`, if any, of the page's own
+host or `PUBLIC_URL`; anything else is refused with 403, so a page on another site cannot make a
+browser write here.
 
 It shows no credentials, and the only things it can change are adding files to an inbox and
 signing a source in, but it does show what is being collected and has no login, so anyone who

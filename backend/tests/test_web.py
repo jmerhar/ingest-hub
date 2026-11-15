@@ -172,12 +172,19 @@ inbox = "{inbox}"
             assert source["upload_max_bytes"] == web.UPLOAD_MAX_BYTES
             assert "EU Data Act export (`.json`)" in source["upload_help"]
 
+            write = {"X-Requested-With": web.WRITE_HEADER_VALUE}
+
             def post(name, body=b"[]", headers=None):
+                named = {"X-Filename": "export.json"} if headers is None else headers
                 return client.post(
-                    f"/api/sources/{name}/files",
-                    content=body,
-                    headers={"X-Filename": "export.json"} if headers is None else headers,
+                    f"/api/sources/{name}/files", content=body, headers={**write, **named}
                 )
+
+            # Without the write header, nothing is saved.
+            refused = await client.post(
+                "/api/sources/exports/files", content=b"[]", headers={"X-Filename": "e.json"}
+            )
+            assert refused.status_code == 403 and list(inbox.iterdir()) == []
 
             assert (await post("plugs")).status_code == 404  # not running
             assert (await post("nowhere")).status_code == 404

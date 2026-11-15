@@ -14,18 +14,19 @@ The application's lifespan runs the sources and alerts, so one process both coll
   saved in the source's inbox, under the upload time and that name, and the source is woken to
   import it; the answer gives the saved name and the server's time (``at``), which the source's
   next ``last_success`` or ``last_error_at`` follows. The body is written to disk as it arrives,
-  up to the source's ``upload_max_bytes`` (``UPLOAD_MAX_BYTES`` by default). The header is
-  required, so a browser on another site cannot post one without a CORS preflight, which this
-  application never allows.
+  up to the source's ``upload_max_bytes`` (``UPLOAD_MAX_BYTES`` by default).
 - ``POST /api/sources/{name}/sign-in``: start signing in a source that needs a person to sign in
   through a browser (``sign_in`` in its status). The answer, and the source's ``sign_in.current``
   from then on, say what to open and do. When the step asks for no answer, the sign-in finishes by
   itself once the person has signed in; otherwise ``POST /api/sources/{name}/sign-in/answer`` with
   ``{"answer": "..."}`` finishes it. Either way a finished sign-in is kept by the source and the
-  source restarted at once. Both take JSON only, which a browser on another site cannot send
-  without a CORS preflight.
+  source restarted at once.
 - ``GET /``: the status page, which renders ``/api/status`` and refreshes itself, and its icon at
   ``/favicon.svg``.
+
+Every write under ``/api`` carries ``X-Requested-With: ingest-hub`` (:data:`WRITE_HEADER_VALUE`),
+and an ``Origin``, if it has one, of the application's own host or ``PUBLIC_URL``; jigkit's write
+guard answers anything else 403, so a page on another site cannot make a browser write here.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ import httpx2
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from jigkit.web import install_security_headers
+from jigkit.web.guard import install_write_guard
 
 from ingest_hub import __version__
 from ingest_hub.alerts import Sender
@@ -56,6 +58,8 @@ from ingest_hub.settings import Settings
 
 #: The environment variable through which ``run --only`` reaches the application factory.
 ONLY_ENV = "INGEST_HUB_ONLY"
+#: The ``X-Requested-With`` value every write carries; the status page sends it.
+WRITE_HEADER_VALUE = "ingest-hub"
 #: The status is stale when the runtime has not refreshed it for this long.
 STALE_SECONDS = 180.0
 
@@ -155,15 +159,6 @@ def _message(error: Exception) -> str:
     return str(error) or type(error).__name__
 
 
-def _not_json(request: Request) -> JSONResponse | None:
-    """A refusal for a request whose body is not declared JSON, or None."""
-    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
-        return JSONResponse(
-            {"error": "the body must be JSON (Content-Type: application/json)"}, 415
-        )
-    return None
-
-
 def saved_name(filename: str, suffixes: tuple[str, ...], moment: float) -> str | None:
     """The name an upload is saved under in an inbox: the upload time (UTC) and the file's own
     name reduced to safe characters, or None when the name has none of the accepted endings."""
@@ -247,6 +242,7 @@ def build_app(
         openapi_url=None,
     )
     install_security_headers(app)
+    install_write_guard(app, value=WRITE_HEADER_VALUE, public_url=settings.public_url)
 
     @app.get("/health")
     async def health() -> JSONResponse:
@@ -330,13 +326,11 @@ def build_app(
             current.state, current.message, current.at = "failed", _message(error), clock()
 
     @app.post("/api/sources/{name}/sign-in")
-    async def start_sign_in(name: str, request: Request) -> JSONResponse:
+    async def start_sign_in(name: str) -> JSONResponse:
         """Start signing a source in, replacing a sign-in started before."""
         found = signs_in(name)
         if found is None:
             return JSONResponse({"error": f"{name} needs no sign-in"}, 404)
-        if refused := _not_json(request):
-            return refused
         assembly, source = found
         if (previous := sign_ins.pop(name, None)) and previous.task is not None:
             previous.task.cancel()
@@ -357,8 +351,6 @@ def build_app(
         found = signs_in(name)
         if found is None:
             return JSONResponse({"error": f"{name} needs no sign-in"}, 404)
-        if refused := _not_json(request):
-            return refused
         assembly, source = found
         current = sign_ins.get(name)
         if current is None or current.step.answer is None or current.state != "waiting":

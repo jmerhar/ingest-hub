@@ -40,9 +40,13 @@ async def until(client: httpx2.AsyncClient, name: str, condition) -> dict:
     return source
 
 
-def post_json(client: httpx2.AsyncClient, path: str, body: object = None, **kwargs):
+#: What the status page sends with every write.
+WRITE = {"X-Requested-With": web.WRITE_HEADER_VALUE}
+
+
+def post_json(client: httpx2.AsyncClient, path: str, body: object = None):
     return client.post(
-        path, content=json.dumps(body or {}), headers={"Content-Type": "application/json"}, **kwargs
+        path, content=json.dumps(body or {}), headers={"Content-Type": "application/json", **WRITE}
     )
 
 
@@ -66,7 +70,20 @@ async def test_a_device_login_started_on_the_page_finishes_by_itself_and_starts_
             assert source["sign_in"] == {"signed_in": False, "current": None}
             assert "not signed in to Home Connect yet" in source["last_error"]
 
-            assert (await client.post("/api/sources/appliances/sign-in")).status_code == 415
+            unguarded = await client.post("/api/sources/appliances/sign-in")
+            assert unguarded.status_code == 403
+            assert unguarded.json() == {"detail": "missing_write_header"}
+            foreign = await client.post(
+                "/api/sources/appliances/sign-in",
+                headers={**WRITE, "Origin": "https://elsewhere.example"},
+            )
+            assert foreign.status_code == 403
+            assert foreign.json() == {"detail": "foreign_origin"}
+            assert (await status_of(client, "appliances"))["sign_in"]["current"] is None
+            own = await client.post(
+                "/api/sources/nowhere/sign-in", headers={**WRITE, "Origin": "http://hub"}
+            )
+            assert own.status_code == 404
             assert (await post_json(client, "/api/sources/nowhere/sign-in")).status_code == 404
             nowhere = await post_json(
                 client, "/api/sources/nowhere/sign-in/answer", {"answer": "x"}
@@ -151,10 +168,8 @@ async def test_a_consent_started_on_the_page_finishes_with_the_pasted_address(tm
             assert "alex's" in started["instructions"]
             state = urllib.parse.parse_qs(urllib.parse.urlsplit(started["url"]).query)["state"][0]
 
-            assert (await client.post(answer, content="{}")).status_code == 415
-            not_json = await client.post(
-                answer, content="nonsense", headers={"Content-Type": "application/json"}
-            )
+            assert (await client.post(answer, content="{}")).status_code == 403
+            not_json = await client.post(answer, content="nonsense", headers=WRITE)
             assert not_json.status_code == 400
             assert not_json.json() == {"error": "paste the address the browser ended up on"}
             assert (await post_json(client, answer, {"answer": "  "})).status_code == 400
