@@ -3,6 +3,40 @@
 Notable changes to ingest-hub. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- A ResMed CPAP source (`resmed_sd`): imports what an AirSense 10 or 11 records on its SD card,
+  uploaded as a zip or dropped into its inbox: each night's summary and settings, mask periods,
+  events, the 2-second series and oximetry, tagged with the device's night. `clock` corrects a
+  CPAP clock's drift.
+- Google Health sources: `google_takeout` imports Google Takeout exports (Fitbit and Pixel Watch
+  data, up to 2 GiB per zip), and `google_health` polls the Google Health API into the same
+  tables, fields and tags. Health sources tag every point with a `person`.
+- A Home Connect source (`home_connect`): follows the appliances of a Home Connect account
+  (Bosch, Siemens, Neff, …) live through the official API's event stream, read-only, with each
+  appliance type in its own table.
+- Signing in from the status page: a source that needs a person to sign in through a browser
+  (`google_health`, `home_connect`) has a sign-in button, and starts again as soon as the sign-in
+  is kept. `ingest-hub google-auth` and `ingest-hub home-connect-auth` do the same without the
+  page.
+- Uploads are written to disk as they arrive, and a source may take files larger than 64 MiB.
+  The upload card says what to upload and the largest file.
+- A page per source under `docs/sources/`, and a table of sources in the README.
+
+### Changed
+
+- Every write to the web interface needs `X-Requested-With: ingest-hub`, and an `Origin`, if
+  any, of the page's own host or `PUBLIC_URL`. Scripts that upload files must send the header.
+- Sources that work on a timer share one job schedule: a failed round is reported and tried
+  again at the next interval, rather than restarting the source (as Tuya did), and intervals run
+  from the start of one round to the start of the next. Zaptec names a failed job `state` or
+  `sessions`.
+- The Vaillant data export source judges an export complete by its last hour, and with `fetch`
+  waits until `not_before` (12:00) in `timezone` before fetching the previous day.
+- Frank's usage progress takes an incomplete day as it is after 7 days rather than 30.
+
 ## 0.3.0 — 2026-11-11
 
 ### Added
