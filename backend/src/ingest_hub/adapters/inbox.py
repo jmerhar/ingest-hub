@@ -3,31 +3,14 @@ an upload, moving an imported file aside, and keeping small state files."""
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import json
 import os
 from pathlib import Path
 from typing import Any
 
-from ingest_hub.collect import SourceContext
-
 #: The folders beside an inbox that its files are moved to once handled.
 IMPORTED = "imported"
 FAILED = "failed"
-
-
-async def wait_or_wake(context: SourceContext, woken: asyncio.Event, seconds: float) -> None:
-    """Wait ``seconds`` for the next scan, or until ``woken`` is set, such as by an upload."""
-    timer = asyncio.ensure_future(context.sleep(seconds))
-    wake = asyncio.ensure_future(woken.wait())
-    done, pending = await asyncio.wait({timer, wake}, return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-    for task in done:
-        task.result()
 
 
 def move_aside(path: Path, folder: str) -> None:
@@ -50,4 +33,4 @@ def write_json(path: Path, data: Any, *, indent: int | None = None, private: boo
     os.replace(temporary, path)
 
 
-__all__ = ["FAILED", "IMPORTED", "move_aside", "wait_or_wake", "write_json"]
+__all__ = ["FAILED", "IMPORTED", "move_aside", "write_json"]

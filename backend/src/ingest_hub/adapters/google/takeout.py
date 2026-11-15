@@ -82,9 +82,9 @@ from ingest_hub.adapters.google.common import (
     resolve_sleeps,
     to_ms,
 )
-from ingest_hub.adapters.inbox import FAILED, IMPORTED, move_aside, wait_or_wake, write_json
+from ingest_hub.adapters.inbox import FAILED, IMPORTED, move_aside, write_json
 from ingest_hub.adapters.night import night_of
-from ingest_hub.collect import SourceContext
+from ingest_hub.collect import Job, Schedule, SourceContext
 
 logger = logging.getLogger(__name__)
 
@@ -665,11 +665,8 @@ class TakeoutSource:
     async def run(self, context: SourceContext) -> None:
         """Import the zips in the inbox every ``scan_minutes`` and whenever woken, for ever."""
         self.inbox.mkdir(parents=True, exist_ok=True)
-        while True:
-            self._woken.clear()
-            if await self.scan(context):
-                context.succeeded()
-            await wait_or_wake(context, self._woken, self._params.scan_minutes * 60)
+        scan = Job("scan", self._params.scan_minutes * 60, lambda: self.scan(context), on_wake=True)
+        await Schedule(context, [scan], wake=self._woken).run()
 
     async def scan(self, context: SourceContext) -> bool:
         """Import every zip waiting in the inbox as one export; False when a batch was refused,

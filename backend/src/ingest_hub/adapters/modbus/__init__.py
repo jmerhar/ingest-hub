@@ -37,7 +37,7 @@ from ingest_hub.adapters.modbus.registers import (
     load_map,
     plan,
 )
-from ingest_hub.collect import SourceContext
+from ingest_hub.collect import Job, Schedule, SourceContext
 
 logger = logging.getLogger(__name__)
 
@@ -96,23 +96,23 @@ class ModbusSource:
         """Read a round every ``interval_seconds`` for ever."""
         client = self._client()
         try:
-            while True:
-                started = context.clock()
-                try:
-                    points = await self.poll(context, client, started)
-                except CONNECTION_ERRORS as error:
-                    message = f"cannot read {self._params.host}: {error or type(error).__name__}"
-                    context.problem(message)
-                    logger.warning(message)
-                else:
-                    if await context.emit(points):
-                        context.succeeded()
-                    else:
-                        context.problem("a batch was refused")
-                elapsed = context.clock() - started
-                await context.sleep(max(0.0, self._params.interval_seconds - elapsed))
+            read = Job("read", self._params.interval_seconds, lambda: self._round(context, client))
+            await Schedule(context, [read]).run()
         finally:
             await client.close()
+
+    async def _round(self, context: SourceContext, client: ModbusClient) -> bool:
+        """One round, written; a device that cannot be reached is named in the failure."""
+        try:
+            points = await self.poll(context, client, context.clock())
+        except CONNECTION_ERRORS as error:
+            raise ConnectionError(
+                f"cannot read {self._params.host}: {error or type(error).__name__}"
+            ) from error
+        if not await context.emit(points):
+            context.problem("a batch was refused")
+            return False
+        return True
 
     async def poll(self, context: SourceContext, client: Any, now: float) -> list[Point]:
         """One round: every due register and repeated block, as points stamped ``now``."""

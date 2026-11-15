@@ -330,7 +330,7 @@ async def test_a_scan_imports_each_export_and_moves_it_aside(tmp_path, caplog):
     with pytest.raises(Stop):
         await harness.source.run(harness.context)  # creates the inbox; nothing in it yet
     assert harness.inbox.is_dir() and harness.batches == [] and harness.successes == 1
-    assert harness.sleeps == [600.0]
+    assert harness.sleeps == [pytest.approx(600.0, abs=1)]
 
     write_export(harness.inbox / "b.json", [TOPOLOGY, POWER, ENERGY])
     write_export(harness.inbox / "a.json", [OTHER])

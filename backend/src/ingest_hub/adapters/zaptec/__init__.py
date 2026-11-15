@@ -43,7 +43,7 @@ import httpx2
 from jigkit.sinks import FieldValue, Point, Precision
 from pydantic import BaseModel, ConfigDict, Field
 
-from ingest_hub.collect import SourceContext
+from ingest_hub.collect import Job, Schedule, SourceContext
 
 logger = logging.getLogger(__name__)
 
@@ -120,31 +120,17 @@ class ZaptecSource:
 
     async def run(self, context: SourceContext) -> None:
         """Read the state every ``state_seconds`` and sessions every ``sessions_minutes``."""
-        schedule = {"state": context.clock(), "sessions": context.clock()}
-        while True:
-            now = context.clock()
-            ok = True
-            if now >= schedule["state"]:
-                schedule["state"] = now + self._params.state_seconds
-                ok = await self._attempt(context, self.poll_state) and ok
-            if now >= schedule["sessions"]:
-                schedule["sessions"] = now + self._params.sessions_minutes * 60
-                ok = await self._attempt(context, self.poll_sessions) and ok
-            if ok:
-                context.succeeded()
-            await context.sleep(max(1.0, min(schedule.values()) - context.clock()))
-
-    async def _attempt(self, context: SourceContext, poll: Any) -> bool:
-        """Run one poll, reporting a failure rather than raising it."""
-        try:
-            await poll(context)
-        except (ZaptecError, httpx2.HTTPError, ValueError, KeyError, TypeError) as error:
-            # A timeout's message is empty, so its type names it.
-            message = f"{poll.__name__}: {str(error) or type(error).__name__}"
-            context.problem(message)
-            logger.warning("%s", message)
-            return False
-        return True
+        await Schedule(
+            context,
+            [
+                Job("state", self._params.state_seconds, lambda: self.poll_state(context)),
+                Job(
+                    "sessions",
+                    self._params.sessions_minutes * 60,
+                    lambda: self.poll_sessions(context),
+                ),
+            ],
+        ).run()
 
     async def _get(self, url: str, **query: str) -> Any:
         """GET a URL as JSON, raising ZaptecError for any answer but 200."""

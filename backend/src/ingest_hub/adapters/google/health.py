@@ -77,7 +77,7 @@ from ingest_hub.adapters.google.oauth import (
 )
 from ingest_hub.adapters.inbox import write_json
 from ingest_hub.adapters.night import night_of
-from ingest_hub.collect import SignInStep, SourceContext
+from ingest_hub.collect import Job, Schedule, SignInStep, SourceContext
 from ingest_hub.config import read_secret
 
 logger = logging.getLogger(__name__)
@@ -582,23 +582,18 @@ class GoogleHealthSource:
 
     async def run(self, context: SourceContext) -> None:
         """Poll every ``poll_minutes`` for ever, reporting a failed poll rather than raising."""
-        fix = f"run `ingest-hub google-auth --source {self._name}`"
-        while True:
-            try:
-                await self.poll(context)
-            except NotSignedIn:
-                context.problem(f"not signed in to Google yet: {fix}")
-                logger.warning("%s: not signed in to Google yet: %s", self._name, fix)
-            except TokenRefused as error:
-                context.problem(f"{error}: {fix}")
-                logger.error("%s: %s: %s", self._name, error, fix)
-            except (ApiError, AuthError, httpx2.HTTPError, ValueError) as error:
-                message = str(error) or type(error).__name__
-                context.problem(message)
-                logger.warning("%s: %s", self._name, message)
-            else:
-                context.succeeded()
-            await context.sleep(self._params.poll_minutes * 60)
+        poll = Job("poll", self._params.poll_minutes * 60, lambda: self._poll_reporting(context))
+        await Schedule(context, [poll]).run()
+
+    async def _poll_reporting(self, context: SourceContext) -> None:
+        """A poll whose sign-in failures say which command fixes them."""
+        fix = f"run `ingest-hub google-auth --source {self._name}`, or sign in on the status page"
+        try:
+            await self.poll(context)
+        except NotSignedIn as error:
+            raise NotSignedIn(f"not signed in to Google yet: {fix}") from error
+        except TokenRefused as error:
+            raise TokenRefused(f"{error}: {fix}") from error
 
     async def poll(self, context: SourceContext) -> None:
         """Read every data type from its cursor minus ``rescan_hours`` up to now."""

@@ -82,10 +82,10 @@ import httpx2
 from jigkit.sinks import FieldValue, Point, Precision
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ingest_hub.adapters.inbox import FAILED, IMPORTED, move_aside, wait_or_wake, write_json
+from ingest_hub.adapters.inbox import FAILED, IMPORTED, move_aside, write_json
 from ingest_hub.adapters.night import night_of
 from ingest_hub.adapters.resmed.edf import Edf, EdfError, read_edf
-from ingest_hub.collect import SourceContext
+from ingest_hub.collect import Job, Schedule, SourceContext
 
 logger = logging.getLogger(__name__)
 
@@ -509,14 +509,11 @@ class ResmedSource:
         self._woken.set()
 
     async def run(self, context: SourceContext) -> None:
-        """Import what the inbox and the card folder hold every ``scan_minutes`` and whenever
-        woken, for ever."""
+        """Import the cards in the inbox every ``scan_minutes`` and at once whenever woken, for
+        ever."""
         self.inbox.mkdir(parents=True, exist_ok=True)
-        while True:
-            self._woken.clear()
-            if await self.scan(context):
-                context.succeeded()
-            await wait_or_wake(context, self._woken, self._params.scan_minutes * 60)
+        scan = Job("scan", self._params.scan_minutes * 60, lambda: self.scan(context), on_wake=True)
+        await Schedule(context, [scan], wake=self._woken).run()
 
     async def scan(self, context: SourceContext) -> bool:
         """Import every zip waiting in the inbox, oldest name first, then the card folder;

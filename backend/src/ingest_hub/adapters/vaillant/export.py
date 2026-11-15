@@ -66,9 +66,9 @@ import httpx2
 from jigkit.sinks import FieldValue, Point, Precision
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ingest_hub.adapters.inbox import FAILED, IMPORTED, move_aside, wait_or_wake, write_json
+from ingest_hub.adapters.inbox import FAILED, IMPORTED, move_aside, write_json
 from ingest_hub.adapters.vaillant.portal import PORTAL_URL, Portal, PortalError
-from ingest_hub.collect import SourceContext
+from ingest_hub.collect import Job, Schedule, SourceContext
 from ingest_hub.config import read_secret
 
 logger = logging.getLogger(__name__)
@@ -419,6 +419,7 @@ class VaillantExportSource:
         self._newest_loaded = False
         #: When a fetch may next be tried.
         self._next_try = float("-inf")
+        self._schedule: Schedule | None = None
 
     @property
     def upload_help(self) -> str:
@@ -439,19 +440,32 @@ class VaillantExportSource:
         """Scan the inbox every ``scan_minutes`` and whenever woken, fetching after the scan when
         yesterday is still missing, for ever."""
         self.inbox.mkdir(parents=True, exist_ok=True)
-        while True:
-            self._woken.clear()
-            # A dropped file of yesterday is imported first, so it saves a fetch.
+        self._schedule = Schedule(
+            context,
+            [
+                Job(
+                    "scan",
+                    self._params.scan_minutes * 60,
+                    lambda: self._round(context),
+                    on_wake=True,
+                )
+            ],
+            wake=self._woken,
+        )
+        await self._schedule.run()
+
+    async def _round(self, context: SourceContext) -> bool:
+        """A scan, and a fetch while yesterday is missing; the next round comes early when a
+        fetch is due before the next scan."""
+        # A dropped file of yesterday is imported first, so it saves a fetch.
+        await self.scan(context)
+        fetched = await self.fetch(context)
+        if fetched is not None:
             await self.scan(context)
-            fetched = await self.fetch(context)
-            if fetched is not None:
-                await self.scan(context)
-            if fetched is not False:
-                context.succeeded()
-            wait = self._params.scan_minutes * 60
-            if self._wants_fetch(context):
-                wait = min(wait, max(1.0, self._next_try - context.clock()))
-            await wait_or_wake(context, self._woken, wait)
+        if self._wants_fetch(context) and self._schedule is not None:
+            wait = min(self._params.scan_minutes * 60, max(1.0, self._next_try - context.clock()))
+            self._schedule.due_in("scan", wait)
+        return fetched is not False
 
     def _newest_day(self, context: SourceContext) -> dt.date | None:
         """The newest day an imported export held, read once from the state directory, or

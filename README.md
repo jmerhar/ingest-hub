@@ -122,9 +122,12 @@ progress trails by design (`{ heating = 6 }`). An ongoing problem is repeated ev
 - **State:** a source keeps its cursors, and the sign-in of one that needs a person to sign in,
   in `$DATA_DIR/state/NAME/`, across restarts; a file holding a token is readable by its owner
   only. Points waiting for an unreachable destination are spooled in `$DATA_DIR/spool/NAME/`.
-- **Failures:** a source that fails starts again after its own back-off, from seconds up to 15
-  minutes, without holding up any other; the status page shows its errors, and [alerts](#alerts)
-  report one that keeps failing.
+- **Failures:** a source that works on a timer reports a failed round and tries again at its
+  next interval, each of its jobs on its own. A source that follows a stream (`mqtt`,
+  `home_connect`), and `vaillant`, which paces itself to its request limit, start again after
+  their own back-off when they fail, from seconds up to 15 minutes. Either way no other source is
+  held up; the status page shows the errors, and [alerts](#alerts) report a source that keeps
+  failing.
 - **Heartbeat:** `heartbeat_url_file` names a file holding a URL, such as an Uptime Kuma push
   monitor's, that is called after each write of the source's points.
 - **Signing in:** a source that needs a person to sign in through a browser (`google_health`,

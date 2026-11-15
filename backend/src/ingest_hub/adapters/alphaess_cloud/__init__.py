@@ -32,7 +32,7 @@ import httpx2
 from jigkit.sinks import FieldValue, Point, Precision
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ingest_hub.collect import SourceContext
+from ingest_hub.collect import Job, Schedule, SourceContext
 from ingest_hub.config import read_secret
 
 logger = logging.getLogger(__name__)
@@ -108,17 +108,8 @@ class AlphaCloudSource:
 
     async def run(self, context: SourceContext) -> None:
         """Poll every ``poll_minutes`` for ever, reporting a failed poll rather than raising."""
-        while True:
-            try:
-                await self.poll(context)
-            except (AlphaCloudError, httpx2.HTTPError, ValueError, KeyError, TypeError) as error:
-                # A timeout's message is empty, so its type names it.
-                message = str(error) or type(error).__name__
-                context.problem(message)
-                logger.warning("AlphaESS cloud: %s", message)
-            else:
-                context.succeeded()
-            await context.sleep(self._params.poll_minutes * 60)
+        poll = Job("poll", self._params.poll_minutes * 60, lambda: self.poll(context))
+        await Schedule(context, [poll]).run()
 
     async def poll(self, context: SourceContext) -> None:
         """Read every day from each system's last completed one up to today."""

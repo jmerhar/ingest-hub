@@ -82,6 +82,7 @@ class Harness:
 
         async def sleep(seconds):
             self.sleeps.append(seconds)
+            self.now += seconds
             if seconds > 60 and len([s for s in self.sleeps if s > 60]) >= self.stop_at:
                 raise Stop
 
@@ -200,7 +201,8 @@ async def test_an_api_error_is_reported_by_run_and_the_poll_tried_again(tmp_path
             with pytest.raises(Stop):
                 await source.run(harness.context)
     assert harness.problems == ["getEssList: 6053 request too frequent"] * 2
-    assert harness.successes == 0 and [s for s in harness.sleeps if s > 60] == [900.0, 900.0]
+    # The next poll is due 15 minutes after this one started; its retries took 2 s of them.
+    assert harness.successes == 0 and [s for s in harness.sleeps if s > 60] == [898.0, 898.0]
 
 
 async def test_a_good_poll_counts_as_success(tmp_path):

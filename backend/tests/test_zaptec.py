@@ -186,7 +186,7 @@ async def test_an_offline_charger_is_reported_and_the_sessions_still_read(tmp_pa
     bridge = Bridge()
     bridge.state = (503, "charger offline")
     harness = await run(tmp_path, bridge)
-    assert any("poll_state" in p and "503" in p for p in harness.problems)
+    assert any("state:" in p and "503" in p for p in harness.problems)
     assert harness.successes == 0
     assert any(r.path == "/sessions" for r in bridge.requests)
 
@@ -275,7 +275,7 @@ async def test_a_sessions_failure_is_reported_and_retried_on_schedule(tmp_path):
     harness = Harness(tmp_path)
     harness.stop_after = 2
     harness = await run(tmp_path, bridge, harness, state_seconds=60, sessions_minutes=1)
-    assert sum("poll_sessions" in p for p in harness.problems) == 2
+    assert sum("sessions:" in p for p in harness.problems) == 2
     assert not (tmp_path / STATE_FILE).exists()
 
 
@@ -368,4 +368,4 @@ async def test_a_timeout_is_reported_by_its_type(tmp_path):
     source = ZaptecSource(ZaptecParams(bridge_url="http://bridge"), TimingOut())
     with pytest.raises(Stop):
         await source.run(harness.context)
-    assert harness.problems == ["poll_state: ReadTimeout", "poll_sessions: ReadTimeout"]
+    assert harness.problems == ["state: ReadTimeout", "sessions: ReadTimeout"]

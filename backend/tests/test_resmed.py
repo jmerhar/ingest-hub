@@ -13,7 +13,6 @@ from jigkit.sinks import Point
 from pydantic import ValidationError
 
 from ingest_hub.adapters import ADAPTERS, resmed
-from ingest_hub.adapters.inbox import wait_or_wake
 from ingest_hub.adapters.night import night_of
 from ingest_hub.adapters.resmed import (
     STATE_FILE,
@@ -26,7 +25,7 @@ from ingest_hub.adapters.resmed import (
     parse_zone,
 )
 from ingest_hub.adapters.resmed.edf import read_edf
-from ingest_hub.collect import AcceptsFiles, SourceContext
+from ingest_hub.collect import AcceptsFiles, SourceContext, wait_or_wake
 
 from .resmed_card import (
     SERIAL,
@@ -425,7 +424,7 @@ async def test_the_source_scans_every_scan_minutes_and_when_woken(tmp_path):
     harness = Harness(tmp_path, scan_minutes=5)
     with pytest.raises(Stop):
         await harness.source.run(harness.context)
-    assert harness.successes == 1 and harness.sleeps == [300.0]
+    assert harness.successes == 1 and harness.sleeps == [pytest.approx(300.0, abs=1)]
 
     async def wait_forever(_seconds: float) -> None:
         await __import__("asyncio").Event().wait()

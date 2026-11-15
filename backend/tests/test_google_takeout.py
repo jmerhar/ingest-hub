@@ -434,7 +434,7 @@ async def test_an_empty_inbox_is_a_successful_round(tmp_path):
     harness = Harness(tmp_path, scan_minutes=5)
     with pytest.raises(Stop):
         await harness.source.run(harness.context)
-    assert harness.successes == 1 and harness.sleeps == [300.0]
+    assert harness.successes == 1 and harness.sleeps == [pytest.approx(300.0, abs=1)]
     harness.source.wake()
     assert harness.source._woken.is_set()
 

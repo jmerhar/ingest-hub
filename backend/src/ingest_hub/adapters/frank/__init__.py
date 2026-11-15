@@ -33,8 +33,8 @@ import httpx2
 from jigkit.sinks import Point, Precision
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ingest_hub.adapters.frank.account import FrankAccount, FrankAccountError
-from ingest_hub.collect import SourceContext
+from ingest_hub.adapters.frank.account import FrankAccount
+from ingest_hub.collect import Job, Schedule, SourceContext
 from ingest_hub.config import read_secret
 
 logger = logging.getLogger(__name__)
@@ -111,52 +111,28 @@ class FrankSource:
         self._params = params
         self._client = client
         self._account = account
-        #: When each kind of round is next due.
-        self._due: dict[str, float] = {}
+        self._schedule: Schedule | None = None
 
     async def run(self, context: SourceContext) -> None:
         """Poll the prices every ``poll_hours`` and the account every ``account_minutes``, for
         ever, reporting a failed round rather than raising it."""
-        due = self._due = {"prices": context.clock(), "account": context.clock()}
-        if self._account is None:
-            due.pop("account")
-        every = {
-            "prices": self._params.poll_hours * 3600,
-            "account": self._params.account_minutes * 60,
-        }
-        while True:
-            ok = True
-            for name in list(due):
-                if context.clock() >= due[name]:
-                    due[name] = context.clock() + every[name]
-                    ok = await self._attempt(context, name) and ok
-            if ok:
-                context.succeeded()
-            await context.sleep(max(1.0, min(due.values()) - context.clock()))
+        jobs = [Job("prices", self._params.poll_hours * 3600, lambda: self.poll(context))]
+        if self._account is not None:
+            jobs.append(
+                Job(
+                    "account",
+                    self._params.account_minutes * 60,
+                    lambda: self._poll_account(context),
+                )
+            )
+        self._schedule = Schedule(context, jobs)
+        await self._schedule.run()
 
-    async def _attempt(self, context: SourceContext, name: str) -> bool:
-        """One round of prices or account data; a failure is reported, not raised."""
-        try:
-            if name == "prices":
-                await self.poll(context)
-            else:
-                assert self._account is not None
-                if await self._account.poll(context):
-                    # History remains: the next round soon, rather than in account_minutes.
-                    self._due["account"] = context.clock() + BACKFILL_PAUSE
-        except (
-            FrankError,
-            FrankAccountError,
-            httpx2.HTTPError,
-            ValueError,
-            KeyError,
-            TypeError,
-        ) as error:
-            message = f"{name}: {str(error) or type(error).__name__}"
-            context.problem(message)
-            logger.warning("Frank %s", message)
-            return False
-        return True
+    async def _poll_account(self, context: SourceContext) -> None:
+        """One round of the account; while history remains, the next comes soon."""
+        assert self._account is not None and self._schedule is not None
+        if await self._account.poll(context):
+            self._schedule.due_in("account", BACKFILL_PAUSE)
 
     async def poll(self, context: SourceContext) -> None:
         """Fetch and deliver today's and tomorrow's prices."""

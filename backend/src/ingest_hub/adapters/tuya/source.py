@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from ingest_hub.adapters.tuya.client import HOSTS, Device, TuyaClient, TuyaError
 from ingest_hub.adapters.tuya.values import CodeSpec, build_points, parse_specification
-from ingest_hub.collect import Progress, SourceContext
+from ingest_hub.collect import Job, Progress, Schedule, SourceContext
 
 logger = logging.getLogger(__name__)
 
@@ -146,10 +146,8 @@ class TuyaSource:
         path = context.state_dir / STATE_FILE
         state = _State.load(path)
         context.restore_progress([Progress(d, c) for d, c in state.cursors.items()])
-        while True:
-            await self.poll(context, state, path)
-            context.succeeded()
-            await context.sleep(self._params.poll_minutes * 60)
+        poll = Job("poll", self._params.poll_minutes * 60, lambda: self.poll(context, state, path))
+        await Schedule(context, [poll]).run()
 
     async def poll(self, context: SourceContext, state: _State, path: Path) -> None:
         """Fetch every device's new reports once.
