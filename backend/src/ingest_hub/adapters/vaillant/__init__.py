@@ -17,8 +17,9 @@ Vaillant counts requests per clock hour and refuses the rest of the hour once it
 A state poll takes about four requests and an energy poll one per series (ten for a heat pump with
 a backup heater). The source keeps its own count against ``requests_per_hour``, kept across
 restarts: a poll that would not fit in what is left of the hour waits for the next one, and a due
-energy poll holds back state polls until it has run, so it is never starved. Each poll logs how
-many requests it took.
+energy poll holds back state polls until it has run, so it is never starved. When the next energy
+poll is due is kept across restarts too, so a restart does not bring one forward and hold the
+state polls back with it. Each poll logs how many requests it took.
 
 A refused call (HTTP 429, or 403 naming the quota) or a server error, at login or later, is waited
 out for as long as Vaillant says or at most ``pause_minutes``, rather than retried at once; only a
@@ -51,6 +52,8 @@ HOUR = dt.timedelta(hours=1)
 STATE_FILE = "vaillant.json"
 #: Requests spent in the current clock hour, so a restart does not start the count again.
 BUDGET_FILE = "vaillant-budget.json"
+#: When the next energy poll is due (Unix seconds), in the source's state directory.
+SCHEDULE_FILE = "vaillant-schedule.json"
 #: Seconds after the top of the hour that a poll held back for the next hour waits, so it does not
 #: land before Vaillant's own count starts again.
 HOUR_MARGIN = 30.0
@@ -64,8 +67,8 @@ TRANSIENT = frozenset({429, 500, 502, 503, 504})
 REPLENISHED = re.compile(r"replenished in (\d+):(\d{2}):(\d{2})")
 #: Seconds added to the replenishment time Vaillant names, so the next call is not early.
 QUOTA_MARGIN = 10
-#: The first energy poll waits this long after the first state poll, so the two bursts of
-#: requests do not land together.
+#: The first energy poll waits at least this long after the first state poll, so the two bursts
+#: of requests do not land together.
 ENERGY_DELAY = 60.0
 #: Seconds between one bucket series and the next, to stay under the per-minute quota.
 SERIES_SPACING = 2.0
@@ -244,7 +247,11 @@ class VaillantSource:
         cursors = _load(path)
         context.restore_progress([Progress(d, c) for d, c in cursors.items()])
         budget = Budget(self._params.requests_per_hour, context.state_dir / BUDGET_FILE)
-        schedule = {"state": context.clock(), "energy": context.clock() + ENERGY_DELAY}
+        self._schedule_path = context.state_dir / SCHEDULE_FILE
+        energy = context.clock() + ENERGY_DELAY
+        if (saved := _load_energy_due(self._schedule_path)) is not None:
+            energy = max(energy, saved)
+        schedule = {"state": context.clock(), "energy": energy}
         while True:
             try:
                 self._seen = 0
@@ -298,6 +305,8 @@ class VaillantSource:
                         await self.poll_energy(context, api, cursors, path)
                     self._charge(api, budget, context.clock(), (kind, cost))
                     schedule[kind] = now + minutes[kind] * 60
+                    if kind == "energy":
+                        _write_json(self._schedule_path, {"energy_due": schedule["energy"]})
             except Exception as error:
                 if not _transient(error):
                     raise
@@ -489,6 +498,17 @@ def _load(path: Path) -> dict[str, int]:
     except (OSError, ValueError, TypeError, AttributeError) as error:
         logger.error("cannot read %s (%s); starting without cursors", path, error)
         return {}
+
+
+def _load_energy_due(path: Path) -> float | None:
+    """When the next energy poll was due when last saved, or None when that is not known."""
+    try:
+        return float(json.loads(path.read_text(encoding="utf-8"))["energy_due"])
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        logger.error("cannot read %s (%s); the energy poll comes a minute after state", path, error)
+        return None
 
 
 def _save(path: Path, cursors: dict[str, int]) -> None:

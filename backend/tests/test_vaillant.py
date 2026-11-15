@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from ingest_hub.adapters import vaillant
 from ingest_hub.adapters.vaillant import (
     BUDGET_FILE,
+    SCHEDULE_FILE,
     STATE_FILE,
     VaillantParams,
     VaillantSource,
@@ -639,3 +640,42 @@ async def test_a_server_error_pauses_without_spending_the_hour(tmp_path):
     # does not spend the hour.
     assert harness.sleeps[0] == 300 and api.system_calls == 3
     assert budget_file(harness) == {"hour": this_hour(), "spent": 8}
+
+
+async def test_a_restart_keeps_the_energy_poll_where_it_was_due(tmp_path):
+    api = energy_api()
+    harness = Harness(tmp_path, api)
+    harness.stop_after = 2
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    saved = json.loads((tmp_path / SCHEDULE_FILE).read_text())["energy_due"]
+    # Energy ran a minute after the start; the next is due energy_minutes after that.
+    assert saved == NOW.timestamp() + 60 + 60 * 60
+
+    # A restart ten minutes later polls state, and leaves energy where it was due.
+    restarted = Harness(tmp_path, energy_api(), NOW + dt.timedelta(minutes=10))
+    restarted.stop_after = 1
+    with pytest.raises(SystemExit):
+        await restarted.source.run(restarted.context)
+    assert restarted.api.calls == []
+    assert restarted.sleeps == [20 * 60.0]
+
+
+@pytest.mark.parametrize("saved", ["{", json.dumps({"energy_due": "soon"}), json.dumps([])])
+async def test_an_unreadable_schedule_brings_energy_a_minute_after_state(tmp_path, saved, caplog):
+    (tmp_path / SCHEDULE_FILE).write_text(saved)
+    harness = Harness(tmp_path, energy_api())
+    harness.stop_after = 1
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    assert harness.sleeps == [60.0]
+    assert "cannot read" in caplog.text
+
+
+async def test_an_energy_poll_long_overdue_comes_a_minute_after_state(tmp_path):
+    (tmp_path / SCHEDULE_FILE).write_text(json.dumps({"energy_due": NOW.timestamp() - 86400}))
+    harness = Harness(tmp_path, energy_api())
+    harness.stop_after = 1
+    with pytest.raises(SystemExit):
+        await harness.source.run(harness.context)
+    assert harness.sleeps == [60.0]
