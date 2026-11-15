@@ -295,3 +295,65 @@ async def test_progress_is_recorded_only_for_safe_batches_and_can_be_restored(tm
         runtime = make_runtime(tmp_path, [SourceSpec("p", "k", Reporting(), "d", sink)], client)
         await run_until(runtime, done.is_set)
     assert runtime.snapshot()["sources"][0]["progress"] == {"old": 5, "s1": 100}
+
+
+async def test_a_restart_cancels_a_running_source_and_starts_it_again_without_a_failure(tmp_path):
+    runs: list[int] = []
+    cancelled: list[int] = []
+
+    class Idle:
+        async def run(self, context: SourceContext) -> None:
+            runs.append(len(runs))
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(len(runs))
+                raise
+
+    async with httpx2.AsyncClient() as client:
+        runtime = make_runtime(tmp_path, [SourceSpec("p", "k", Idle(), "d", FakeSink())], client)
+        assert runtime.state_dir("p") == tmp_path / "state" / "p"
+        assert runtime.restart("nowhere") is False
+        task = asyncio.create_task(runtime.run())
+        try:
+            await wait_for(lambda: len(runs) == 1)
+            assert runtime.restart("p") is True
+            await wait_for(lambda: len(runs) == 2)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    status = runtime.statuses[0]
+    assert status.restarts == 0 and status.last_error is None
+    # The second run is cancelled with the runtime, not left running.
+    assert cancelled == [1, 2]
+
+
+async def test_a_restart_cuts_the_pause_after_a_failure_short(tmp_path):
+    runs: list[int] = []
+
+    class Broken:
+        async def run(self, context: SourceContext) -> None:
+            runs.append(len(runs))
+            raise RuntimeError("down")
+
+    async def long_pauses(seconds: float) -> None:
+        await asyncio.sleep(
+            3600 if seconds >= runtime_module.FIRST_BACKOFF_SECONDS * 0.5 else 0.001
+        )
+
+    async with httpx2.AsyncClient() as client:
+        runtime = make_runtime(
+            tmp_path, [SourceSpec("p", "k", Broken(), "d", FakeSink())], client, long_pauses
+        )
+        task = asyncio.create_task(runtime.run())
+        try:
+            await wait_for(lambda: runtime.statuses[0].state == "backing-off")
+            assert len(runs) == 1
+            runtime.restart("p")
+            await wait_for(lambda: len(runs) == 2)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    assert runtime.statuses[0].restarts == 2

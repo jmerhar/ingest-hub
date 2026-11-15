@@ -53,17 +53,25 @@ With `WEB_PORT` set, `ingest-hub run` also serves:
 - `/`: a page showing each source's state, last success and error, points and batches written,
   spool backlog, heartbeat, and how far each of its streams is complete, refreshed every 15 s. A
   source that imports files from a folder (`vaillant_export`, `resmed_sd`, `google_takeout`) has
-  an upload button, with what to upload and the largest file it takes;
+  an upload button, with what to upload and the largest file it takes. A source that needs a person
+  to sign in through a browser (`home_connect`, `google_health`) has a sign-in button, which shows
+  the page to open and what to do there, and the source starts again as soon as the sign-in is
+  kept;
 - `/api/status`: the same as JSON;
 - `POST /api/sources/NAME/files`: save the request body in that source's inbox, named by the upload
   time and the `X-Filename` header (required), and import it at once; at most 64 MiB unless the
   source allows more, written to disk as it arrives;
+- `POST /api/sources/NAME/sign-in` (JSON): start signing that source in, replacing a sign-in
+  started before; the answer and the source's `sign_in.current` in the status say what to open.
+  When the step asks for no answer it finishes by itself; otherwise `POST
+  /api/sources/NAME/sign-in/answer` with `{"answer": "…"}` finishes it;
 - `/health`: 200 while the runtime is running and refreshing its status, 503 otherwise. It does
   not depend on any destination, since restarting the process would not bring a database back.
 
-It shows no credentials, and the only thing it can change is adding files to an inbox, but it
-does show what is being collected and has no login; publish it only behind a reverse proxy you
-control.
+It shows no credentials, and the only things it can change are adding files to an inbox and
+signing a source in, but it does show what is being collected and has no login, so anyone who
+can reach it could sign a source in to another account; publish it only behind a reverse proxy
+you control.
 
 ### Alerts
 
@@ -449,8 +457,10 @@ The API needs a Google Cloud project with the Google Health API enabled, an OAut
 (External, its three `googlehealth.*.readonly` scopes, published "In production": while it is in
 "Testing", Google ends a sign-in after seven days), and a "Desktop app" OAuth client, whose ID and
 secret go in `client_id_file` and `client_secret_file`. An unverified app serves up to 100 people.
-Each person then consents once, in two steps that wait for nothing, so they also work through
-`docker exec`:
+Each person then consents once, with the source's sign-in button on the status page: it opens
+Google's consent, and the address the browser fails to open afterwards, on `127.0.0.1`, is pasted
+back on the page. Without the web interface, the same takes two commands that wait for nothing,
+so they also work through `docker exec`:
 
 ```sh
 ingest-hub google-auth --source google_alex
@@ -575,8 +585,9 @@ percent.
 It needs an application registered in the
 [Home Connect Developer Program](https://developer.home-connect.com/) with the OAuth flow "Device
 Flow"; its client ID goes in `client_id_file`. While the application is unpublished, only the Home
-Connect account it names for testing can sign in. Sign in once; the command waits until the code
-it shows is confirmed in a browser:
+Connect account it names for testing can sign in. Sign in once, with the source's sign-in button
+on the status page: it shows a link and a code to confirm there, and notices by itself when that
+is done. Without the web interface, the command waits until the code it shows is confirmed:
 
 ```sh
 ingest-hub home-connect-auth --source appliances
@@ -585,7 +596,7 @@ ingest-hub home-connect-auth --source appliances
 It asks for read-only access (`IdentifyAppliance Monitor Settings`). The tokens are kept in the
 source's state directory (`home-connect-token.json`), readable by their owner only, and the access
 token is renewed daily. A sign-in Home Connect no longer accepts, or none at all, ends each run
-with the command that fixes it.
+with the command that fixes it; the sign-in button fixes it too.
 
 ```toml
 [sources.appliances]

@@ -24,7 +24,6 @@ import logging
 import os
 import signal
 import sys
-import time
 from collections.abc import Coroutine, Sequence
 from pathlib import Path
 from typing import Any
@@ -37,27 +36,18 @@ from jigkit.web.server import PORT
 from pydantic import ValidationError
 
 from ingest_hub import __version__
-from ingest_hub.adapters import tuya
+from ingest_hub.adapters import home_connect, tuya
 from ingest_hub.adapters.google import health as google_health
-from ingest_hub.adapters.google.api import ApiError, HealthApi
-from ingest_hub.adapters.google.oauth import (
-    AuthError,
-    code_from_redirect,
-    exchange,
-    load_consent,
-    missing_scopes,
-    save_consent,
-    save_token,
-    start_consent,
-)
+from ingest_hub.adapters.google.api import ApiError
+from ingest_hub.adapters.google.oauth import DEFAULT_PORT, AuthError
 from ingest_hub.adapters.home_connect import auth as home_connect_auth
 from ingest_hub.adapters.home_connect.api import ApiError as HomeConnectApiError
-from ingest_hub.adapters.home_connect.api import HomeConnectApi
 from ingest_hub.adapters.home_connect.source import HomeConnectParams
 from ingest_hub.adapters.tuya.dump import DumpError, import_dump
 from ingest_hub.alerts import read_urls
+from ingest_hub.collect.runtime import MAX_BACKOFF_SECONDS
 from ingest_hub.compare import compare
-from ingest_hub.config import ConfigError, load_config, read_secret
+from ingest_hub.config import ConfigError, load_config
 from ingest_hub.hub import assemble, make_sink, plan, source_params
 from ingest_hub.settings import Settings
 from ingest_hub.web import ONLY_ENV
@@ -65,6 +55,12 @@ from ingest_hub.web import ONLY_ENV
 logger = logging.getLogger("ingest_hub")
 
 LOG_FILE = Path("logs") / "ingest-hub.log"
+#: When a running hub's source starts using a sign-in made on the command line: at its next run,
+#: which is at most the runtime's longest back-off away.
+PICKED_UP = (
+    f"A running ingest-hub starts using it within {MAX_BACKOFF_SECONDS / 60:.0f} minutes, "
+    "or at once when restarted."
+)
 
 
 async def _run(settings: Settings, only: str | None) -> int:
@@ -167,70 +163,44 @@ async def _google_auth(settings: Settings, source: str, port: int, address: str 
     """Consent to a Google Health source in two runs: without ``address``, start a consent and show
     the address to open; with the address the browser was sent to, finish it and keep the refresh
     token in the source's state directory."""
-    config = load_config(settings.resolved_config_file)
-    if source not in config.sources:
-        raise ConfigError(f"no source named {source!r}")
-    if config.sources[source].kind != "google_health":
-        raise ConfigError(f"source {source!r} is not a Google Health source")
-    params = source_params(config, source)
+    params = _source_params_of(settings, source, "google_health", "a Google Health source")
     assert isinstance(params, google_health.GoogleHealthParams)
-    credentials = google_health.credentials_of(params)
     state_dir = settings.data_dir / "state" / source
-    if address is None:
-        consent = start_consent(credentials, port)
-        save_consent(state_dir, consent)
-        print(
-            "1. Open this address in a browser, signed in to the Google account whose data is "
-            f"{params.person}'s:\n\n{consent.url}\n\n"
-            "2. Allow every access it asks for.\n"
-            "3. The browser then fails to open a page on 127.0.0.1. Copy that page's whole address "
-            "from the address bar and run:\n\n"
-            f"   ingest-hub google-auth --source {source} --address '<the address>'"
-        )
-        return 0
-    consent = load_consent(state_dir)
-    code = code_from_redirect(address, consent.state)
     async with httpx2.AsyncClient() as client:
-        refresh_token, scopes = await exchange(client, credentials, consent, code, params.token_url)
-        api = HealthApi(
-            client, credentials, refresh_token, url=params.url, token_url=params.token_url
-        )
-        await api.identity()
-    path = save_token(state_dir, refresh_token, scopes, time.time())
-    print(f"Signed in: the source reads {params.person}'s data from its next poll ({path}).")
-    if missing := missing_scopes(scopes):
-        print(f"Not granted, so not read: {', '.join(missing)}. Consent again to grant them.")
+        health = google_health.build(params, client, source)
+        if address is None:
+            step = await health.start_sign_in(state_dir, port)
+            print(
+                f"{step.url}\n\n{step.instructions} Then run:\n\n"
+                f"   ingest-hub google-auth --source {source} --address '<the address>'"
+            )
+            return 0
+        print(await health.finish_sign_in(state_dir, address), PICKED_UP)
     return 0
 
 
 async def _home_connect_auth(settings: Settings, source: str) -> int:
     """Sign a Home Connect source in: show a code to confirm in a browser, wait for it, and keep
     the tokens in the source's state directory."""
+    params = _source_params_of(settings, source, "home_connect", "a Home Connect source")
+    assert isinstance(params, HomeConnectParams)
+    state_dir = settings.data_dir / "state" / source
+    async with httpx2.AsyncClient() as client:
+        appliances = home_connect.build(params, client, source)
+        step = await appliances.start_sign_in(state_dir)
+        print(f"{step.url}\n\n(code {step.code}) {step.instructions} Waiting…", flush=True)
+        print(await appliances.finish_sign_in(state_dir), PICKED_UP)
+    return 0
+
+
+def _source_params_of(settings: Settings, source: str, kind: str, what: str) -> Any:
+    """A configured source's validated parameters, checking it is of ``kind``."""
     config = load_config(settings.resolved_config_file)
     if source not in config.sources:
         raise ConfigError(f"no source named {source!r}")
-    if config.sources[source].kind != "home_connect":
-        raise ConfigError(f"source {source!r} is not a Home Connect source")
-    params = source_params(config, source)
-    assert isinstance(params, HomeConnectParams)
-    client_id = read_secret(params.client_id_file)
-    async with httpx2.AsyncClient() as client:
-        login = await home_connect_auth.start_login(client, client_id, params.url)
-        print(
-            "Open this address in a browser, sign in with the Home Connect account your "
-            f"appliances are paired with, and allow the access it asks for:\n\n"
-            f"{login.verification_url}\n\n(code {login.user_code}; waiting up to "
-            f"{login.expires_in / 60:.0f} minutes)",
-            flush=True,
-        )
-        tokens = await home_connect_auth.finish_login(
-            client, client_id, login, now=time.time, sleep=asyncio.sleep, url=params.url
-        )
-        appliances = await HomeConnectApi(client, tokens.access_token, params.url).appliances()
-    path = home_connect_auth.save_tokens(settings.data_dir / "state" / source, tokens)
-    names = ", ".join(a.label for a in appliances) or "none yet"
-    print(f"Signed in ({path}). Appliances: {names}. The source picks this up on its next start.")
-    return 0
+    if config.sources[source].kind != kind:
+        raise ConfigError(f"source {source!r} is not {what}")
+    return source_params(config, source)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -255,7 +225,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     auth = commands.add_parser("google-auth")
     auth.add_argument("--source", required=True, help="the Google Health source to consent to")
     auth.add_argument(
-        "--port", type=int, default=8765, help="the 127.0.0.1 port Google redirects the browser to"
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help="the 127.0.0.1 port Google redirects the browser to",
     )
     auth.add_argument("--address", help="the address the browser was sent to after consenting")
     home_connect = commands.add_parser("home-connect-auth")

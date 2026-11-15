@@ -23,9 +23,11 @@ longer accepts, or a missing login, ends the run with the command that fixes it.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,15 +48,18 @@ from ingest_hub.adapters.home_connect.api import (
 from ingest_hub.adapters.home_connect.auth import (
     URL,
     AuthError,
+    DeviceLogin,
     TokenRefused,
     Tokens,
+    finish_login,
     load_tokens,
     refresh,
     save_tokens,
+    start_login,
 )
 from ingest_hub.adapters.home_connect.values import field_name, field_value, snake, type_of
 from ingest_hub.adapters.inbox import write_json
-from ingest_hub.collect import Progress, SourceContext
+from ingest_hub.collect import Progress, SignInStep, SourceContext
 
 logger = logging.getLogger(__name__)
 
@@ -114,10 +119,53 @@ class HomeConnectSource:
         self._last_sample = float("-inf")
         #: When each appliance's state was last read.
         self._read_at: dict[str, float] = {}
+        self._login: DeviceLogin | None = None
+        #: The clock and sleep a sign-in waits with, which runs outside the source's own run.
+        self.now = time.time
+        self.sleep = asyncio.sleep
 
     @property
     def fix(self) -> str:
         return f"run `ingest-hub home-connect-auth --source {self._name}`"
+
+    def signed_in(self, state_dir: Path) -> bool:
+        """Whether a sign-in is kept in the state directory."""
+        try:
+            return load_tokens(state_dir) is not None
+        except AuthError:
+            return False
+
+    async def start_sign_in(self, _state_dir: Path) -> SignInStep:
+        """Start a device login; the person confirms its code at the address it gives."""
+        self._login = await start_login(self._client, self._client_id, self._params.url)
+        return SignInStep(
+            url=self._login.verification_url,
+            code=self._login.user_code or None,
+            instructions=(
+                "Open the link, sign in with the Home Connect account your appliances are paired "
+                "with, and allow the access it asks for."
+            ),
+        )
+
+    async def finish_sign_in(self, state_dir: Path, _answer: str | None = None) -> str:
+        """Wait until the started login's code is confirmed, and keep the tokens it gives."""
+        if self._login is None:
+            raise AuthError("no sign-in was started")
+        login, self._login = self._login, None
+        tokens = await finish_login(
+            self._client,
+            self._client_id,
+            login,
+            now=self.now,
+            sleep=self.sleep,
+            url=self._params.url,
+        )
+        appliances = await HomeConnectApi(
+            self._client, tokens.access_token, self._params.url
+        ).appliances()
+        save_tokens(state_dir, tokens)
+        names = ", ".join(a.label for a in appliances) or "none yet"
+        return f"Signed in. Appliances: {names}."
 
     async def run(self, context: SourceContext) -> None:
         """Read the appliances and follow the event stream for ever; a failure ends the run."""

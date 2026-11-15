@@ -58,6 +58,36 @@ class AcceptsFiles(Protocol):
         """Look at the inbox now, rather than at the next scan."""
 
 
+@dataclass(frozen=True)
+class SignInStep:
+    """What a person does to sign a source in: open ``url`` in a browser and follow
+    ``instructions``. ``code`` is a code that page shows or asks for, if any. With ``answer`` set,
+    the person pastes something back, which ``answer`` describes, such as the address the browser
+    ends up on; without, the source notices the sign-in by itself."""
+
+    url: str
+    instructions: str
+    code: str | None = None
+    answer: str | None = None
+
+
+@runtime_checkable
+class SignsIn(Protocol):
+    """A source that needs a person to sign in through a browser, once, before it can run, such as
+    to an OAuth service. It keeps what the sign-in gives in its state directory."""
+
+    def signed_in(self, state_dir: Path) -> bool:
+        """Whether a sign-in is kept, whether or not the service still accepts it."""
+
+    async def start_sign_in(self, state_dir: Path) -> SignInStep:
+        """Start a sign-in, replacing any started before, and say what the person does."""
+
+    async def finish_sign_in(self, state_dir: Path, answer: str | None) -> str:
+        """Finish the sign-in started last and keep it, returning a sentence on what it gave. For
+        a step without ``answer``, this waits until the person has signed in; for one with, it
+        takes the person's answer. Raises with a message the person can act on when it fails."""
+
+
 Emit = Callable[[list[Point]], Awaitable[bool]]
 
 

@@ -5,10 +5,10 @@ PKCE: the person opens :func:`authorization_url` in a browser, consents, and Goo
 browser to ``http://127.0.0.1:<port>/`` with a code. Nothing listens there, so the browser shows
 an error page; its address holds the code, and the person pastes it back
 (:func:`code_from_redirect`). This works wherever the command runs, a container on a server
-included, without a port reaching it. The consent is started and finished by two runs of the
-command, so neither has to wait for input; the started one is kept in between
-(:func:`save_consent`). :func:`exchange` trades the code for a refresh token, kept
-in the source's state directory, readable by its owner only (:func:`save_token`), and
+included, without a port reaching it. The consent is started and finished in two steps, by two
+runs of the command or on the status page, so neither has to wait for input; the started one is
+kept in between (:func:`save_consent`). :func:`exchange` trades the code for a refresh token,
+kept in the source's state directory, readable by its owner only (:func:`save_token`), and
 :func:`refresh` trades that for an access token, which lasts an hour.
 
 Google ends a refresh token when the person withdraws access, when it is unused for six months,
@@ -44,6 +44,8 @@ SCOPES = (
 TOKEN_FILE = "google-token.json"
 #: A consent started and not yet finished, in the source's state directory.
 CONSENT_FILE = "google-consent.json"
+#: The 127.0.0.1 port Google sends the browser to after a consent, unless another is chosen.
+DEFAULT_PORT = 8765
 TIMEOUT = 30.0
 
 
@@ -228,6 +230,7 @@ def load_token(state_dir: Path) -> str | None:
 
 
 __all__ = [
+    "DEFAULT_PORT",
     "SCOPES",
     "AuthError",
     "Consent",

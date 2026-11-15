@@ -972,8 +972,8 @@ async def test_home_connect_auth_shows_the_code_waits_and_keeps_the_tokens(tmp_p
         assert await cli._home_connect_auth(settings, "appliances") == 0
     shown = capsys.readouterr().out
     assert "https://example.test/verify?user_code=ABCD-1234" in shown
-    assert "code ABCD-1234; waiting up to 10 minutes" in shown
-    assert "Appliances: Brand DW1 (Dishwasher)" in shown
+    assert "(code ABCD-1234) Open the link" in shown
+    assert "Appliances: Brand DW1 (Dishwasher). A running ingest-hub starts using it" in shown
     tokens = auth.load_tokens(tmp_path / "state" / "appliances")
     assert tokens is not None and (tokens.refresh_token, tokens.access_token) == ("r", "a")
 
@@ -1014,3 +1014,14 @@ def test_the_command_reports_home_connect_errors(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     assert cli.main(["home-connect-auth", "--source", "x"]) == 2
     assert "ingest-hub: boom" in capsys.readouterr().err
+
+
+async def test_signing_in_needs_a_started_login_and_a_readable_token_file(tmp_path):
+    async with serving(StubServer(respond=FakeHomeConnect())) as server:
+        harness = Harness(tmp_path, server, signed_in=False)
+        assert harness.source.signed_in(harness.state) is False
+        with pytest.raises(auth.AuthError, match="no sign-in was started"):
+            await harness.source.finish_sign_in(harness.state)
+        harness.state.mkdir(parents=True, exist_ok=True)
+        (harness.state / auth.TOKEN_FILE).write_text("{broken")
+        assert harness.source.signed_in(harness.state) is False

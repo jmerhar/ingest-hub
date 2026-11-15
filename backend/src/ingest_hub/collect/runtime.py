@@ -63,6 +63,8 @@ class _Slot:
         # submit alone (see Runtime._emit).
         self.lock = asyncio.Lock()
         self.backoff = FIRST_BACKOFF_SECONDS
+        #: Set to stop the source's current run, or its pause before the next, and start it again.
+        self.restart = asyncio.Event()
 
 
 class Runtime:
@@ -107,6 +109,19 @@ class Runtime:
     def source(self, name: str) -> Source | None:
         """The running source of that name, if there is one."""
         return next((slot.spec.source for slot in self._slots if slot.spec.name == name), None)
+
+    def state_dir(self, name: str) -> Path:
+        """The directory a source keeps its own state in."""
+        return self._data_dir / "state" / name
+
+    def restart(self, name: str) -> bool:
+        """Start a source again now: its current run is cancelled, or the pause before its next
+        run cut short, without counting as a failure. False when there is no such source."""
+        slot = next((slot for slot in self._slots if slot.spec.name == name), None)
+        if slot is None:
+            return False
+        slot.restart.set()
+        return True
 
     def snapshot(self) -> dict[str, Any]:
         """The whole runtime's status as plain data."""
@@ -160,9 +175,10 @@ class Runtime:
         return tasks
 
     async def _supervise(self, slot: _Slot) -> None:
-        """Run a source, restarting it after a growing pause whenever it fails."""
+        """Run a source, restarting it after a growing pause whenever it fails, or at once when
+        :meth:`restart` asks."""
         spec, status = slot.spec, slot.status
-        state_dir = self._data_dir / "state" / spec.name
+        state_dir = self.state_dir(spec.name)
         state_dir.mkdir(parents=True, exist_ok=True)
 
         def succeeded() -> None:
@@ -187,11 +203,15 @@ class Runtime:
         )
         while True:
             status.state = "running"
+            slot.restart.clear()
+            run = asyncio.create_task(spec.source.run(context), name=f"{spec.name}:run")
+            if await _restarted(run, slot.restart):
+                logger.info("source %s restarted on request", spec.name)
+                slot.backoff = FIRST_BACKOFF_SECONDS
+                continue
             try:
-                await spec.source.run(context)
+                run.result()
                 message = "the source stopped on its own"
-            except asyncio.CancelledError:
-                raise
             except Exception as error:
                 message = f"{type(error).__name__}: {error}"
             pause = slot.backoff * random.uniform(1 - JITTER, 1 + JITTER)
@@ -200,7 +220,12 @@ class Runtime:
             status.restarts += 1
             status.state = "backing-off"
             slot.backoff = min(slot.backoff * 2, MAX_BACKOFF_SECONDS)
-            await self._sleep(pause)
+            waiting = asyncio.create_task(self._sleep(pause), name=f"{spec.name}:pause")
+            if await _restarted(waiting, slot.restart):
+                logger.info("source %s restarted on request", spec.name)
+                slot.backoff = FIRST_BACKOFF_SECONDS
+                continue
+            waiting.result()
 
     async def _emit(self, slot: _Slot, points: list[Point]) -> bool:
         """Submit one batch, returning whether it was written or spooled.
@@ -247,3 +272,28 @@ class Runtime:
                 await sink.flush()
             with contextlib.suppress(Exception):
                 await sink.aclose()
+
+
+async def _restarted(work: asyncio.Task[None], restart: asyncio.Event) -> bool:
+    """Wait for ``work`` or ``restart``, whichever comes first. True when ``restart`` came first,
+    after cancelling ``work``; False when ``work`` finished, for the caller to take its result.
+    Cancelling the wait cancels ``work`` too."""
+    wake = asyncio.create_task(restart.wait())
+    try:
+        done, _ = await asyncio.wait({work, wake}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        await _cancel(work)
+        raise
+    finally:
+        wake.cancel()
+    if work in done:
+        return False
+    await _cancel(work)
+    return True
+
+
+async def _cancel(work: asyncio.Task[None]) -> None:
+    """Cancel a task and wait until it has stopped, whatever it ends with."""
+    work.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await work

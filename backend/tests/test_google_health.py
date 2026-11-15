@@ -564,3 +564,13 @@ async def test_a_respiratory_summary_takes_the_night_of_the_sleep_it_ends(tmp_pa
         await harness.source.poll(harness.context)
     (point,) = table(harness.points, "respiratory_rate_sleep_summary")
     assert tags(point) == {"night": "2026-11-10"}
+
+
+async def test_signing_in_needs_an_answer_and_a_readable_token_file(tmp_path):
+    async with serving(StubServer(respond=FakeGoogle())) as server:
+        harness = Harness(tmp_path, server)
+        assert harness.source.signed_in(harness.state) is True
+        with pytest.raises(oauth.AuthError, match="paste the address"):
+            await harness.source.finish_sign_in(harness.state, " ")
+        (harness.state / oauth.TOKEN_FILE).write_text("{broken")
+        assert harness.source.signed_in(harness.state) is False

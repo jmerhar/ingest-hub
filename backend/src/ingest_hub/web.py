@@ -1,4 +1,4 @@
-"""The web interface: a read-only status page, its JSON, and the health endpoint.
+"""The web interface: the status page, its JSON, the health endpoint, uploads and sign-ins.
 
 The application's lifespan runs the sources and alerts, so one process both collects and serves:
 ``ingest-hub run`` with ``WEB_PORT`` set starts it through ``jigkit.web.serve``.
@@ -17,6 +17,13 @@ The application's lifespan runs the sources and alerts, so one process both coll
   up to the source's ``upload_max_bytes`` (``UPLOAD_MAX_BYTES`` by default). The header is
   required, so a browser on another site cannot post one without a CORS preflight, which this
   application never allows.
+- ``POST /api/sources/{name}/sign-in``: start signing in a source that needs a person to sign in
+  through a browser (``sign_in`` in its status). The answer, and the source's ``sign_in.current``
+  from then on, say what to open and do. When the step asks for no answer, the sign-in finishes by
+  itself once the person has signed in; otherwise ``POST /api/sources/{name}/sign-in/answer`` with
+  ``{"answer": "..."}`` finishes it. Either way a finished sign-in is kept by the source and the
+  source restarted at once. Both take JSON only, which a browser on another site cannot send
+  without a CORS preflight.
 - ``GET /``: the status page, which renders ``/api/status`` and refreshes itself, and its icon at
   ``/favicon.svg``.
 """
@@ -29,7 +36,8 @@ import os
 import re
 import tempfile
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -41,7 +49,7 @@ from jigkit.web import install_security_headers
 
 from ingest_hub import __version__
 from ingest_hub.alerts import Sender
-from ingest_hub.collect import AcceptsFiles
+from ingest_hub.collect import AcceptsFiles, SignInStep, SignsIn
 from ingest_hub.config import load_config
 from ingest_hub.hub import Assembly, assemble
 from ingest_hub.settings import Settings
@@ -63,9 +71,38 @@ PAGE_POLICY = (
 )
 
 
-def status_document(assembly: Assembly, revision: str | None) -> dict[str, Any]:
+@dataclass
+class SignIn:
+    """A sign-in started through the web interface."""
+
+    step: SignInStep
+    #: ``waiting`` (for the person, or for their answer), ``done`` or ``failed``.
+    state: str
+    #: When the state last changed (Unix seconds).
+    at: float
+    #: What the source said when it finished, or why it failed.
+    message: str | None = None
+    #: The background wait of a sign-in whose step asks for no answer.
+    task: asyncio.Task[None] | None = None
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "at": self.at,
+            "url": self.step.url,
+            "code": self.step.code,
+            "instructions": self.step.instructions,
+            "answer": self.step.answer,
+            "message": self.message,
+        }
+
+
+def status_document(
+    assembly: Assembly, revision: str | None, sign_ins: Mapping[str, SignIn] | None = None
+) -> dict[str, Any]:
     """The status as ``/api/status`` returns it."""
     snapshot = assembly.runtime.snapshot()
+    sign_ins = sign_ins or {}
     return {
         "version": __version__,
         "revision": revision,
@@ -77,7 +114,11 @@ def status_document(assembly: Assembly, revision: str | None) -> dict[str, Any]:
             for name, d in assembly.config.destinations.items()
         },
         "sources": [
-            {**source, **_upload(assembly.runtime.source(source["name"]))}
+            {
+                **source,
+                **_upload(assembly.runtime.source(source["name"])),
+                "sign_in": _sign_in(assembly, source["name"], sign_ins.get(source["name"])),
+            }
             for source in snapshot["sources"]
         ],
     }
@@ -95,6 +136,32 @@ def _upload(source: object) -> dict[str, Any]:
         "upload_max_bytes": upload_limit(source),
         "upload_help": help_text if isinstance(help_text, str) and help_text else None,
     }
+
+
+def _sign_in(assembly: Assembly, name: str, current: SignIn | None) -> dict[str, Any] | None:
+    """What the status says about signing a source in: whether a sign-in is kept
+    (``signed_in``) and the one started through the web interface, if any (``current``); None
+    for a source that needs none."""
+    source = assembly.runtime.source(name)
+    if not isinstance(source, SignsIn):
+        return None
+    return {
+        "signed_in": source.signed_in(assembly.runtime.state_dir(name)),
+        "current": current.snapshot() if current else None,
+    }
+
+
+def _message(error: Exception) -> str:
+    return str(error) or type(error).__name__
+
+
+def _not_json(request: Request) -> JSONResponse | None:
+    """A refusal for a request whose body is not declared JSON, or None."""
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        return JSONResponse(
+            {"error": "the body must be JSON (Content-Type: application/json)"}, 415
+        )
+    return None
 
 
 def saved_name(filename: str, suffixes: tuple[str, ...], moment: float) -> str | None:
@@ -145,6 +212,8 @@ def build_app(
     """The application, which runs the configured sources for as long as it serves."""
     config = load_config(settings.resolved_config_file)
     state: dict[str, Any] = {}
+    #: The sign-in started last through the web interface, per source.
+    sign_ins: dict[str, SignIn] = {}
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -162,6 +231,9 @@ def build_app(
             try:
                 yield
             finally:
+                for current in sign_ins.values():
+                    if current.task is not None:
+                        current.task.cancel()
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
@@ -194,7 +266,7 @@ def build_app(
         """Every source's status, for the page and for scripts."""
         if "assembly" not in state:
             return JSONResponse({"status": "starting"}, 503)
-        return JSONResponse(status_document(state["assembly"], settings.revision))
+        return JSONResponse(status_document(state["assembly"], settings.revision, sign_ins))
 
     @app.post("/api/sources/{name}/files")
     async def upload(name: str, request: Request) -> JSONResponse:
@@ -234,6 +306,76 @@ def build_app(
             partial.unlink(missing_ok=True)
         source.wake()
         return JSONResponse({"saved": saved, "bytes": size, "at": clock()}, 201)
+
+    def signs_in(name: str) -> tuple[Assembly, SignsIn] | None:
+        assembly: Assembly | None = state.get("assembly")
+        source = assembly.runtime.source(name) if assembly else None
+        return (assembly, source) if assembly and isinstance(source, SignsIn) else None
+
+    async def finish(
+        assembly: Assembly, name: str, source: SignsIn, current: SignIn, answer: str | None
+    ) -> None:
+        """Finish a sign-in; once kept, start the source again so it uses it at once."""
+        message = await source.finish_sign_in(assembly.runtime.state_dir(name), answer)
+        current.state, current.message, current.at = "done", message, clock()
+        assembly.runtime.restart(name)
+
+    async def wait_for_person(
+        assembly: Assembly, name: str, source: SignsIn, current: SignIn
+    ) -> None:
+        """Finish a sign-in that asks for no answer, in the background, recording a failure."""
+        try:
+            await finish(assembly, name, source, current, None)
+        except Exception as error:
+            current.state, current.message, current.at = "failed", _message(error), clock()
+
+    @app.post("/api/sources/{name}/sign-in")
+    async def start_sign_in(name: str, request: Request) -> JSONResponse:
+        """Start signing a source in, replacing a sign-in started before."""
+        found = signs_in(name)
+        if found is None:
+            return JSONResponse({"error": f"{name} needs no sign-in"}, 404)
+        if refused := _not_json(request):
+            return refused
+        assembly, source = found
+        if (previous := sign_ins.pop(name, None)) and previous.task is not None:
+            previous.task.cancel()
+        try:
+            step = await source.start_sign_in(assembly.runtime.state_dir(name))
+        except Exception as error:
+            return JSONResponse({"error": _message(error)}, 502)
+        current = sign_ins[name] = SignIn(step, "waiting", clock())
+        if step.answer is None:
+            current.task = asyncio.create_task(
+                wait_for_person(assembly, name, source, current), name=f"{name}:sign-in"
+            )
+        return JSONResponse(current.snapshot(), 201)
+
+    @app.post("/api/sources/{name}/sign-in/answer")
+    async def answer_sign_in(name: str, request: Request) -> JSONResponse:
+        """Finish a sign-in with the person's answer."""
+        found = signs_in(name)
+        if found is None:
+            return JSONResponse({"error": f"{name} needs no sign-in"}, 404)
+        if refused := _not_json(request):
+            return refused
+        assembly, source = found
+        current = sign_ins.get(name)
+        if current is None or current.step.answer is None or current.state != "waiting":
+            return JSONResponse({"error": "no sign-in is waiting for an answer; start one"}, 409)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        answer = body.get("answer") if isinstance(body, dict) else None
+        if not isinstance(answer, str) or not answer.strip():
+            return JSONResponse({"error": f"paste {current.step.answer}"}, 400)
+        try:
+            await finish(assembly, name, source, current, answer)
+        except Exception as error:
+            current.message = _message(error)
+            return JSONResponse({"error": current.message}, 400)
+        return JSONResponse(current.snapshot())
 
     @app.get("/favicon.svg")
     async def favicon() -> Response:

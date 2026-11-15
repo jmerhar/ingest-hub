@@ -13,6 +13,9 @@ ingest-hub, so it can move into jigkit unchanged if another application needs it
   writes to the ``ingest_progress`` table in the same batch as the points it covers.
 - A source that imports files from a folder (:class:`~ingest_hub.collect.source.AcceptsFiles`)
   says so, so files can be handed to it directly.
+- A source that needs a person to sign in through a browser
+  (:class:`~ingest_hub.collect.source.SignsIn`) says so, so the sign-in can be driven from
+  elsewhere, and the runtime can restart it at once afterwards (:meth:`Runtime.restart`).
 """
 
 from ingest_hub.collect.runtime import Runtime, SourceSpec
@@ -20,6 +23,8 @@ from ingest_hub.collect.source import (
     PROGRESS_TABLE,
     AcceptsFiles,
     Progress,
+    SignInStep,
+    SignsIn,
     Source,
     SourceContext,
 )
@@ -30,6 +35,8 @@ __all__ = [
     "AcceptsFiles",
     "Progress",
     "Runtime",
+    "SignInStep",
+    "SignsIn",
     "Source",
     "SourceContext",
     "SourceSpec",

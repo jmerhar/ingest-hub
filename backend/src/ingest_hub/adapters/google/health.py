@@ -1,7 +1,8 @@
 """Google Health data from the Google Health API, polled as one person who has consented.
 
-The person consents once with ``ingest-hub google-auth --source NAME`` (see ``oauth.py``), which
-keeps a refresh token in the source's state directory. Every ``poll_minutes`` the source reads
+The person consents once, with the source's sign-in button on the status page or with
+``ingest-hub google-auth --source NAME`` (see ``oauth.py``), which keeps a refresh token in the
+source's state directory. Every ``poll_minutes`` the source reads
 each data type below from its cursor minus ``rescan_hours`` up to now (the first time, from
 ``history_days`` back), since watches sync late and Google revises what it has, and writes the
 same tables, fields and tags as the ``google_takeout`` source, so a poll and an export of the
@@ -39,6 +40,7 @@ import datetime as dt
 import json
 import logging
 import math
+import time
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -59,15 +61,23 @@ from ingest_hub.adapters.google.common import (
     to_ms,
 )
 from ingest_hub.adapters.google.oauth import (
+    DEFAULT_PORT,
     TOKEN_URL,
     AuthError,
     Credentials,
     TokenRefused,
+    code_from_redirect,
+    exchange,
+    load_consent,
     load_token,
+    missing_scopes,
+    save_consent,
+    save_token,
+    start_consent,
 )
 from ingest_hub.adapters.inbox import write_json
 from ingest_hub.adapters.night import night_of
-from ingest_hub.collect import SourceContext
+from ingest_hub.collect import SignInStep, SourceContext
 from ingest_hub.config import read_secret
 
 logger = logging.getLogger(__name__)
@@ -519,6 +529,56 @@ class GoogleHealthSource:
         self._credentials = credentials
         self._zone = ZoneInfo(params.timezone)
         self._types = DATA_TYPES + ((HEART_RATE,) if params.heart_rate_minutes else ())
+
+    def signed_in(self, state_dir: Path) -> bool:
+        """Whether a refresh token is kept in the state directory."""
+        try:
+            return load_token(state_dir) is not None
+        except AuthError:
+            return False
+
+    async def start_sign_in(self, state_dir: Path, port: int = DEFAULT_PORT) -> SignInStep:
+        """Start a consent, kept until its answer is pasted; Google sends the browser to
+        ``http://127.0.0.1:<port>/`` afterwards, an address that holds the answer."""
+        consent = start_consent(self._credentials, port)
+        save_consent(state_dir, consent)
+        return SignInStep(
+            url=consent.url,
+            instructions=(
+                "Open the link, signed in to the Google account whose data is "
+                f"{self._params.person}'s, and allow every access it asks for. The browser then "
+                "fails to open a page on 127.0.0.1: copy that page's whole address from the "
+                "address bar."
+            ),
+            answer="the address the browser ended up on",
+        )
+
+    async def finish_sign_in(self, state_dir: Path, answer: str | None) -> str:
+        """Finish the consent started last with the address the browser ended up on, and keep
+        its refresh token once Google answers a request with it."""
+        if not answer or not answer.strip():
+            raise AuthError("paste the address the browser ended up on")
+        consent = load_consent(state_dir)
+        code = code_from_redirect(answer, consent.state)
+        token_url = self._params.token_url
+        refresh_token, scopes = await exchange(
+            self._client, self._credentials, consent, code, token_url
+        )
+        api = HealthApi(
+            self._client,
+            self._credentials,
+            refresh_token,
+            url=self._params.url,
+            token_url=token_url,
+        )
+        await api.identity()
+        save_token(state_dir, refresh_token, scopes, time.time())
+        message = f"Signed in: the source reads {self._params.person}'s data."
+        if missing := missing_scopes(scopes):
+            message += (
+                f" Not granted, so not read: {', '.join(missing)}. Sign in again to grant them."
+            )
+        return message
 
     async def run(self, context: SourceContext) -> None:
         """Poll every ``poll_minutes`` for ever, reporting a failed poll rather than raising."""
