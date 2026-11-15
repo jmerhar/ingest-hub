@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from ingest_hub.adapters import (
     alphaess_cloud,
     frank,
+    home_connect,
     modbus,
     mqtt,
     resmed,
@@ -39,6 +40,7 @@ ADAPTERS: dict[str, Adapter] = {
     "frank": Adapter(frank.FrankParams, frank.build),
     "google_health": Adapter(google_health.GoogleHealthParams, google_health.build),
     "google_takeout": Adapter(google_takeout.TakeoutParams, google_takeout.build),
+    "home_connect": Adapter(home_connect.HomeConnectParams, home_connect.build),
     "modbus": Adapter(modbus.ModbusParams, modbus.build),
     "mqtt": Adapter(mqtt.MqttParams, mqtt.build),
     "resmed_sd": Adapter(resmed.ResmedParams, resmed.build),

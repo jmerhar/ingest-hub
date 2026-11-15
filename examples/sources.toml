@@ -227,3 +227,14 @@ destination = "home"
 app_id_file = "/run/secrets/alphaess_app_id"
 app_secret_file = "/run/secrets/alphaess_app_secret"
 timezone = "Europe/Amsterdam"
+
+# Home Connect appliances (Bosch, Siemens, Neff, ...), followed live; sign in once with
+# `ingest-hub home-connect-auth --source appliances` (see the README).
+[sources.appliances]
+kind = "home_connect"
+destination = "home"
+
+[sources.appliances.params]
+client_id_file = "/run/secrets/home_connect_client_id"
+# sample_minutes = 15
+# resync_minutes = 15

@@ -37,11 +37,16 @@ def move_aside(path: Path, folder: str) -> None:
     os.replace(path, target / path.name)
 
 
-def write_json(path: Path, data: Any, *, indent: int | None = None) -> None:
-    """Write a JSON file atomically, creating its folder."""
+def write_json(path: Path, data: Any, *, indent: int | None = None, private: bool = False) -> None:
+    """Write a JSON file atomically, creating its folder; with ``private``, readable by its owner
+    only, from the moment it is created, as a file holding a token must be."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps(data, indent=indent), encoding="utf-8")
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o666
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(data, indent=indent))
     os.replace(temporary, path)
 
 

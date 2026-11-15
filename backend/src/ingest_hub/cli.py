@@ -8,6 +8,8 @@
                                              compare a shadow table with the one it replaces
     ingest-hub google-auth --source SOURCE [--port P] [--address URL]
                                              consent to a Google Health source reading your data
+    ingest-hub home-connect-auth --source SOURCE
+                                             sign a Home Connect source in to your appliances
 
 Settings come from the environment (DATA_DIR, CONFIG_FILE, LOG_LEVEL, SPOOL_MAX_BYTES); sources
 and destinations from the configuration file.
@@ -48,10 +50,14 @@ from ingest_hub.adapters.google.oauth import (
     save_token,
     start_consent,
 )
+from ingest_hub.adapters.home_connect import auth as home_connect_auth
+from ingest_hub.adapters.home_connect.api import ApiError as HomeConnectApiError
+from ingest_hub.adapters.home_connect.api import HomeConnectApi
+from ingest_hub.adapters.home_connect.source import HomeConnectParams
 from ingest_hub.adapters.tuya.dump import DumpError, import_dump
 from ingest_hub.alerts import read_urls
 from ingest_hub.compare import compare
-from ingest_hub.config import ConfigError, load_config
+from ingest_hub.config import ConfigError, load_config, read_secret
 from ingest_hub.hub import assemble, make_sink, plan, source_params
 from ingest_hub.settings import Settings
 from ingest_hub.web import ONLY_ENV
@@ -197,6 +203,36 @@ async def _google_auth(settings: Settings, source: str, port: int, address: str 
     return 0
 
 
+async def _home_connect_auth(settings: Settings, source: str) -> int:
+    """Sign a Home Connect source in: show a code to confirm in a browser, wait for it, and keep
+    the tokens in the source's state directory."""
+    config = load_config(settings.resolved_config_file)
+    if source not in config.sources:
+        raise ConfigError(f"no source named {source!r}")
+    if config.sources[source].kind != "home_connect":
+        raise ConfigError(f"source {source!r} is not a Home Connect source")
+    params = source_params(config, source)
+    assert isinstance(params, HomeConnectParams)
+    client_id = read_secret(params.client_id_file)
+    async with httpx2.AsyncClient() as client:
+        login = await home_connect_auth.start_login(client, client_id, params.url)
+        print(
+            "Open this address in a browser, sign in with the Home Connect account your "
+            f"appliances are paired with, and allow the access it asks for:\n\n"
+            f"{login.verification_url}\n\n(code {login.user_code}; waiting up to "
+            f"{login.expires_in / 60:.0f} minutes)",
+            flush=True,
+        )
+        tokens = await home_connect_auth.finish_login(
+            client, client_id, login, now=time.time, sleep=asyncio.sleep, url=params.url
+        )
+        appliances = await HomeConnectApi(client, tokens.access_token, params.url).appliances()
+    path = home_connect_auth.save_tokens(settings.data_dir / "state" / source, tokens)
+    names = ", ".join(a.label for a in appliances) or "none yet"
+    print(f"Signed in ({path}). Appliances: {names}. The source picks this up on its next start.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse the command line and run the command; configuration errors exit 2."""
     parser = argparse.ArgumentParser(prog="ingest-hub", description=__doc__.split("\n", 1)[0])
@@ -222,6 +258,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--port", type=int, default=8765, help="the 127.0.0.1 port Google redirects the browser to"
     )
     auth.add_argument("--address", help="the address the browser was sent to after consenting")
+    home_connect = commands.add_parser("home-connect-auth")
+    home_connect.add_argument("--source", required=True, help="the Home Connect source to sign in")
     args = parser.parse_args(argv)
 
     try:
@@ -244,7 +282,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.command == "google-auth":
             return asyncio.run(_google_auth(settings, args.source, args.port, args.address))
+        if args.command == "home-connect-auth":
+            return asyncio.run(_home_connect_auth(settings, args.source))
         return asyncio.run(_import_tuya_dump(settings, args.directory, args.source))
-    except (ConfigError, DumpError, AuthError, ApiError) as error:
+    except (
+        ConfigError,
+        DumpError,
+        AuthError,
+        ApiError,
+        home_connect_auth.AuthError,
+        HomeConnectApiError,
+    ) as error:
         print(f"ingest-hub: {error}", file=sys.stderr)
         return 2

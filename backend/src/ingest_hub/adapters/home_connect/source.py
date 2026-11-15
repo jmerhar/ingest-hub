@@ -1,0 +1,305 @@
+"""The Home Connect source: every appliance's state, followed live on Home Connect's event stream.
+
+When it connects, the source reads the appliances paired with the account and each connected
+one's status, settings and programmes, then follows the event stream, writing each change as it
+arrives. Every ``sample_minutes`` it writes each appliance's whole state again, from what it
+already knows, so a quiet appliance still has recent points and the source's heartbeat keeps
+beating. A stream that ends is opened again; the full state is read again then only if the last
+read is ``resync_minutes`` old. The same holds for an appliance that reconnects, and for one the
+stream names that the source does not know yet (read with every other appliance), so neither a
+failing source nor an appliance whose connection keeps dropping can use up Home Connect's daily
+request limit; a newly paired appliance is read at once.
+
+Each appliance type has its table, ``<table_prefix><type>`` such as ``home_connect_dishwasher``,
+tagged ``appliance`` with the appliance's Home Connect ID; fields are named as ``values.py``
+describes, plus ``connected``. A field keeps the type it was first written with (kept in the
+state directory); a later value of another type is left out and reported, since InfluxDB would
+refuse it. Each appliance's progress is the time of the last message received, so a stream that
+stops arriving is noticed; its label is the appliance's brand, model and type.
+
+The access token lasts a day and is renewed before it expires. A refresh token Home Connect no
+longer accepts, or a missing login, ends the run with the command that fixes it.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import logging
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import httpx2
+from jigkit.sinks import FieldValue, Point, Precision
+from pydantic import BaseModel, ConfigDict, Field
+
+from ingest_hub.adapters.home_connect.api import (
+    ApiError,
+    Appliance,
+    Event,
+    HomeConnectApi,
+    RateLimited,
+    Unauthorized,
+)
+from ingest_hub.adapters.home_connect.auth import (
+    URL,
+    AuthError,
+    TokenRefused,
+    Tokens,
+    load_tokens,
+    refresh,
+    save_tokens,
+)
+from ingest_hub.adapters.home_connect.values import field_name, field_value, snake, type_of
+from ingest_hub.adapters.inbox import write_json
+from ingest_hub.collect import Progress, SourceContext
+
+logger = logging.getLogger(__name__)
+
+#: The type each field was first written with, in the source's state directory.
+STATE_FILE = "home-connect.json"
+#: The pause before opening a stream again after Home Connect closed it.
+RECONNECT_SECONDS = 5.0
+#: Events that carry an appliance's values.
+VALUE_EVENTS = ("STATUS", "EVENT", "NOTIFY")
+
+
+class NotSignedIn(AuthError):
+    """No login has been completed for the source yet."""
+
+
+class HomeConnectParams(BaseModel):
+    """A Home Connect source's ``params`` in the configuration file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The client ID of the application registered with "Device Flow".
+    client_id_file: Path
+    table_prefix: str = Field("home_connect_", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    #: How often every appliance's whole state is written, even when nothing changes.
+    sample_minutes: float = Field(15, gt=0)
+    #: How old the last full read must be before a reconnect reads every appliance again.
+    resync_minutes: float = Field(15, ge=0)
+    url: str = URL
+
+
+@dataclass
+class Tracked:
+    """What the source knows of one appliance."""
+
+    appliance: Appliance
+    values: dict[str, FieldValue] = field(default_factory=dict)
+
+    @property
+    def table_suffix(self) -> str:
+        return snake(self.appliance.type) or "appliance"
+
+
+class HomeConnectSource:
+    """Follows every appliance of one Home Connect account."""
+
+    def __init__(
+        self, params: HomeConnectParams, client: httpx2.AsyncClient, name: str, client_id: str
+    ) -> None:
+        self._params = params
+        self._client = client
+        self._name = name
+        self._client_id = client_id
+        self._appliances: dict[str, Tracked] = {}
+        self._types: dict[str, str] = {}
+        self._refused: set[str] = set()
+        self._last_sync = float("-inf")
+        self._last_sample = float("-inf")
+        #: When each appliance's state was last read.
+        self._read_at: dict[str, float] = {}
+
+    @property
+    def fix(self) -> str:
+        return f"run `ingest-hub home-connect-auth --source {self._name}`"
+
+    async def run(self, context: SourceContext) -> None:
+        """Read the appliances and follow the event stream for ever; a failure ends the run."""
+        tokens = load_tokens(context.state_dir)
+        if tokens is None:
+            raise NotSignedIn(f"not signed in to Home Connect yet: {self.fix}")
+        self._types = _load_types(context.state_dir / STATE_FILE)
+        refreshed = False
+        while True:
+            if not tokens.fresh(context.clock()):
+                tokens = await self._refresh(context, tokens)
+                refreshed = True
+            api = HomeConnectApi(self._client, tokens.access_token, self._params.url)
+            try:
+                if context.clock() - self._last_sync >= self._params.resync_minutes * 60:
+                    await self._sync(context, api)
+                await self._follow(context, api, tokens)
+            except Unauthorized:
+                if refreshed:
+                    raise
+                tokens = dataclasses.replace(tokens, access_token="")
+                continue
+            except RateLimited as error:
+                context.problem(str(error))
+                logger.warning("%s: %s", self._name, error)
+                await context.sleep(error.retry_after)
+                continue
+            finally:
+                logger.debug("%s: %d request(s) on this connection", self._name, api.requests)
+            refreshed = False
+            await context.sleep(RECONNECT_SECONDS)
+
+    async def _refresh(self, context: SourceContext, tokens: Tokens) -> Tokens:
+        try:
+            tokens = await refresh(
+                self._client, self._client_id, tokens, context.clock(), self._params.url
+            )
+        except TokenRefused as error:
+            raise TokenRefused(f"{error}: {self.fix}") from error
+        save_tokens(context.state_dir, tokens)
+        return tokens
+
+    async def _sync(self, context: SourceContext, api: HomeConnectApi) -> None:
+        """Read the appliances and each connected one's state, and write it all."""
+        appliances = await api.appliances()
+        self._appliances = {
+            a.ha_id: Tracked(
+                a, self._appliances[a.ha_id].values if a.ha_id in self._appliances else {}
+            )
+            for a in appliances
+        }
+        for tracked in self._appliances.values():
+            tracked.values["connected"] = tracked.appliance.connected
+            if tracked.appliance.connected:
+                await self._read(context, api, tracked)
+        self._last_sync = context.clock()
+        await self._sample(context)
+        names = ", ".join(t.appliance.label for t in self._appliances.values()) or "none"
+        logger.info("%s: appliances: %s", self._name, names)
+
+    async def _follow(self, context: SourceContext, api: HomeConnectApi, tokens: Tokens) -> None:
+        """Follow the event stream until it ends or the access token is about to expire."""
+        async for event in api.events():
+            context.succeeded()
+            await self._handle(context, api, event)
+            if context.clock() - self._last_sample >= self._params.sample_minutes * 60:
+                await self._sample(context)
+            if not tokens.fresh(context.clock()):
+                return
+
+    def _due(self, since: float, context: SourceContext) -> bool:
+        """Whether a read last made at ``since`` is ``resync_minutes`` old."""
+        return context.clock() - since >= self._params.resync_minutes * 60
+
+    async def _read(self, context: SourceContext, api: HomeConnectApi, tracked: Tracked) -> dict:
+        """Read an appliance's state into what is known of it; the fields it set."""
+        self._read_at[tracked.appliance.ha_id] = context.clock()
+        return self._apply(tracked, await api.state(tracked.appliance.ha_id))
+
+    async def _handle(self, context: SourceContext, api: HomeConnectApi, event: Event) -> None:
+        unknown = event.ha_id and event.ha_id not in self._appliances and event.kind != "KEEP-ALIVE"
+        if event.kind in ("PAIRED", "DEPAIRED") or (
+            unknown and self._due(self._last_sync, context)
+        ):
+            await self._sync(context, api)
+            return
+        tracked = self._appliances.get(event.ha_id)
+        if tracked is None:
+            return
+        now_ms = context.now_ms()
+        if event.kind in ("CONNECTED", "DISCONNECTED"):
+            connected = event.kind == "CONNECTED"
+            changes = {"connected": connected}
+            if connected and self._due(self._read_at.get(event.ha_id, float("-inf")), context):
+                changes.update(await self._read(context, api, tracked))
+            tracked.values["connected"] = connected
+            await self._emit(context, [self._point(tracked, now_ms, changes)])
+        elif event.kind in VALUE_EVENTS:
+            by_time: dict[int, list[tuple[str, Any]]] = defaultdict(list)
+            for item in event.items:
+                stamp = item.get("timestamp")
+                when = int(stamp * 1000) if isinstance(stamp, (int, float)) else now_ms
+                by_time[when].append((item["key"], item.get("value")))
+            points = [
+                self._point(tracked, when, self._apply(tracked, items))
+                for when, items in sorted(by_time.items())
+            ]
+            await self._emit(context, points)
+
+    def _apply(self, tracked: Tracked, items: list[tuple[str, Any]]) -> dict[str, FieldValue]:
+        """Take keys and values into what is known of an appliance; the fields they set."""
+        changes: dict[str, FieldValue] = {}
+        for key, raw in items:
+            value = field_value(key, raw)
+            if value is not None:
+                changes[field_name(key)] = value
+        tracked.values.update(changes)
+        return changes
+
+    def _point(self, tracked: Tracked, when_ms: int, fields: dict[str, FieldValue]) -> Point:
+        return Point(
+            self._params.table_prefix + tracked.table_suffix,
+            (("appliance", tracked.appliance.ha_id),),
+            when_ms,
+            dict(fields),
+            precision=Precision.MILLISECONDS,
+        )
+
+    async def _sample(self, context: SourceContext) -> None:
+        """Write every appliance's whole state as it is now."""
+        now_ms = context.now_ms()
+        await self._emit(
+            context, [self._point(t, now_ms, t.values) for t in self._appliances.values()]
+        )
+        self._last_sample = context.clock()
+
+    async def _emit(self, context: SourceContext, points: list[Point]) -> None:
+        """Hand points over, each field checked against the type it was first written with, with
+        every appliance's progress up to now."""
+        checked = [p for p in (self._typed(context, p) for p in points) if p.fields]
+        now_ms = context.now_ms()
+        progress = [
+            Progress(ha_id, now_ms, tracked.appliance.label)
+            for ha_id, tracked in self._appliances.items()
+        ]
+        if not await context.emit(checked, progress):
+            context.problem("a batch was refused; its values are lost")
+
+    def _typed(self, context: SourceContext, point: Point) -> Point:
+        fields: dict[str, FieldValue] = {}
+        learned = False
+        for name, value in point.fields.items():
+            key = f"{point.table}.{name}"
+            kind = type_of(value)
+            learned = learned or key not in self._types
+            known = self._types.setdefault(key, kind)
+            if known == kind:
+                fields[name] = value
+                continue
+            if key not in self._refused:
+                self._refused.add(key)
+                message = f"{key} arrived as {kind}, but was first written as {known}; left out"
+                context.problem(message)
+                logger.warning("%s: %s", self._name, message)
+        if learned:
+            _save_types(context.state_dir / STATE_FILE, self._types)
+        return dataclasses.replace(point, fields=fields)
+
+
+def _load_types(path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as error:
+        raise ApiError(f"cannot read {path.name}: {error}") from error
+    types = data.get("field_types") if isinstance(data, dict) else None
+    return {str(k): str(v) for k, v in types.items()} if isinstance(types, dict) else {}
+
+
+def _save_types(path: Path, types: dict[str, str]) -> None:
+    write_json(path, {"field_types": dict(sorted(types.items()))}, indent=1)
+
+
+__all__ = ["HomeConnectParams", "HomeConnectSource", "NotSignedIn"]

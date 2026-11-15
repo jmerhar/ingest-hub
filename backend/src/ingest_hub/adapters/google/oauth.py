@@ -22,13 +22,14 @@ import base64
 import datetime as dt
 import hashlib
 import json
-import os
 import secrets
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx2
+
+from ingest_hub.adapters.inbox import write_json
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -180,16 +181,6 @@ def missing_scopes(granted: list[str]) -> list[str]:
     return [scope.removeprefix(SCOPE_PREFIX) for scope in SCOPES if scope not in granted]
 
 
-def _write_private(path: Path, data: dict) -> None:
-    """Write JSON readable by its owner only, appearing whole under its name."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.part")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        json.dump(data, handle)
-    os.replace(temporary, path)
-
-
 def save_consent(state_dir: Path, consent: Consent) -> None:
     """Keep a started consent until its answer is pasted, replacing any earlier one."""
     data = {
@@ -197,7 +188,7 @@ def save_consent(state_dir: Path, consent: Consent) -> None:
         "verifier": consent.verifier,
         "redirect_uri": consent.redirect_uri,
     }
-    _write_private(state_dir / CONSENT_FILE, {**data, "url": consent.url})
+    write_json(state_dir / CONSENT_FILE, {**data, "url": consent.url}, private=True)
 
 
 def load_consent(state_dir: Path) -> Consent:
@@ -219,7 +210,7 @@ def save_token(state_dir: Path, refresh_token: str, scopes: list[str], when: flo
         "scopes": scopes,
         "granted_at": dt.datetime.fromtimestamp(when, dt.UTC).isoformat(),
     }
-    _write_private(path, data)
+    write_json(path, data, private=True)
     (state_dir / CONSENT_FILE).unlink(missing_ok=True)
     return path
 
