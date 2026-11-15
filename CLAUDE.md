@@ -1,7 +1,8 @@
 # ingest-hub
 
 A config-driven ingest service: source adapters write points through jigkit sinks. See README.md
-for behaviour and the data model.
+for behaviour and the data model, and `docs/sources/` for each source; a new source gets a page
+there and a row in the README's sources table.
 
 ## Data in the repository
 

@@ -207,7 +207,7 @@ host = "192.0.2.30"
 map = "hoymiles-dtu"
 interval_seconds = 60
 
-# A Zaptec charger, through a bridge that holds the Zaptec login (see the README).
+# A Zaptec charger, through a bridge that holds the Zaptec login (see docs/sources/zaptec.md).
 [sources.charger]
 kind = "zaptec"
 destination = "home"
@@ -229,7 +229,7 @@ app_secret_file = "/run/secrets/alphaess_app_secret"
 timezone = "Europe/Amsterdam"
 
 # Home Connect appliances (Bosch, Siemens, Neff, ...), followed live; sign in once with
-# `ingest-hub home-connect-auth --source appliances` (see the README).
+# `ingest-hub home-connect-auth --source appliances` (see docs/sources/home-connect.md).
 [sources.appliances]
 kind = "home_connect"
 destination = "home"
