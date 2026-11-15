@@ -3,6 +3,14 @@
 Notable changes to ingest-hub. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The Vaillant source keeps its next energy poll where it was due across restarts. A restart put
+  it a minute after the start, where it held back the state polls until it fitted in the hour's
+  request budget, so a run of restarts could leave no state poll for hours.
+
 ## 0.4.0 — 2026-11-15
 
 ### Added
