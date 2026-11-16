@@ -10,6 +10,13 @@ stream names that the source does not know yet (read with every other appliance)
 failing source nor an appliance whose connection keeps dropping can use up Home Connect's daily
 request limit; a newly paired appliance is read at once.
 
+A read replaces what is known of an appliance rather than adding to it, since Home Connect stops
+sending what no longer applies, such as a finished program's progress, rather than clearing it.
+So when an appliance's operation state changes (a program starts, finishes, pauses), its state is
+read again, at most every ``REREAD_SECONDS``: a change inside that time is read once it has
+passed. The whole-state samples then repeat only what is true, and a field that was only ever an
+event, such as a program having finished, is written when it happens.
+
 Each appliance type has its table, ``<table_prefix><type>`` such as ``home_connect_dishwasher``,
 tagged ``appliance`` with the appliance's Home Connect ID; fields are named as ``values.py``
 describes, plus ``connected``. A field keeps the type it was first written with (kept in the
@@ -69,6 +76,10 @@ STATE_FILE = "home-connect.json"
 RECONNECT_SECONDS = 5.0
 #: Events that carry an appliance's values.
 VALUE_EVENTS = ("STATUS", "EVENT", "NOTIFY")
+#: The field whose change has an appliance's state read again.
+OPERATION_STATE = "status_operation_state"
+#: The least time between two reads of one appliance's state after its operation state changes.
+REREAD_SECONDS = 300.0
 
 
 class NotSignedIn(AuthError):
@@ -96,6 +107,8 @@ class Tracked:
 
     appliance: Appliance
     values: dict[str, FieldValue] = field(default_factory=dict)
+    #: Whether its operation state changed since its state was last read.
+    stale: bool = False
 
     @property
     def table_suffix(self) -> str:
@@ -218,9 +231,10 @@ class HomeConnectSource:
             for a in appliances
         }
         for tracked in self._appliances.values():
-            tracked.values["connected"] = tracked.appliance.connected
             if tracked.appliance.connected:
                 await self._read(context, api, tracked)
+            else:
+                tracked.values["connected"] = False
         self._last_sync = context.clock()
         await self._sample(context)
         names = ", ".join(t.appliance.label for t in self._appliances.values()) or "none"
@@ -231,6 +245,7 @@ class HomeConnectSource:
         async for event in api.events():
             context.succeeded()
             await self._handle(context, api, event)
+            await self._read_stale(context, api)
             if context.clock() - self._last_sample >= self._params.sample_minutes * 60:
                 await self._sample(context)
             if not tokens.fresh(context.clock()):
@@ -241,9 +256,21 @@ class HomeConnectSource:
         return context.clock() - since >= self._params.resync_minutes * 60
 
     async def _read(self, context: SourceContext, api: HomeConnectApi, tracked: Tracked) -> dict:
-        """Read an appliance's state into what is known of it; the fields it set."""
+        """Read a connected appliance's state, replacing what is known of it; its fields."""
         self._read_at[tracked.appliance.ha_id] = context.clock()
-        return self._apply(tracked, await api.state(tracked.appliance.ha_id))
+        tracked.stale = False
+        fields = {"connected": True, **_fields(await api.state(tracked.appliance.ha_id))}
+        tracked.values = dict(fields)
+        return fields
+
+    async def _read_stale(self, context: SourceContext, api: HomeConnectApi) -> None:
+        """Read again, and write, each appliance whose operation state changed, once
+        ``REREAD_SECONDS`` have passed since its last read."""
+        for ha_id, tracked in self._appliances.items():
+            last = self._read_at.get(ha_id, float("-inf"))
+            if tracked.stale and context.clock() - last >= REREAD_SECONDS:
+                fields = await self._read(context, api, tracked)
+                await self._emit(context, [self._point(tracked, context.now_ms(), fields)])
 
     async def _handle(self, context: SourceContext, api: HomeConnectApi, event: Event) -> None:
         unknown = event.ha_id and event.ha_id not in self._appliances and event.kind != "KEEP-ALIVE"
@@ -258,12 +285,13 @@ class HomeConnectSource:
         now_ms = context.now_ms()
         if event.kind in ("CONNECTED", "DISCONNECTED"):
             connected = event.kind == "CONNECTED"
-            changes = {"connected": connected}
+            changes: dict[str, FieldValue] = {"connected": connected}
             if connected and self._due(self._read_at.get(event.ha_id, float("-inf")), context):
-                changes.update(await self._read(context, api, tracked))
+                changes = await self._read(context, api, tracked)
             tracked.values["connected"] = connected
             await self._emit(context, [self._point(tracked, now_ms, changes)])
         elif event.kind in VALUE_EVENTS:
+            operation = tracked.values.get(OPERATION_STATE)
             by_time: dict[int, list[tuple[str, Any]]] = defaultdict(list)
             for item in event.items:
                 stamp = item.get("timestamp")
@@ -274,14 +302,12 @@ class HomeConnectSource:
                 for when, items in sorted(by_time.items())
             ]
             await self._emit(context, points)
+            if tracked.values.get(OPERATION_STATE) != operation:
+                tracked.stale = True
 
     def _apply(self, tracked: Tracked, items: list[tuple[str, Any]]) -> dict[str, FieldValue]:
         """Take keys and values into what is known of an appliance; the fields they set."""
-        changes: dict[str, FieldValue] = {}
-        for key, raw in items:
-            value = field_value(key, raw)
-            if value is not None:
-                changes[field_name(key)] = value
+        changes = _fields(items)
         tracked.values.update(changes)
         return changes
 
@@ -333,6 +359,16 @@ class HomeConnectSource:
         if learned:
             _save_types(context.state_dir / STATE_FILE, self._types)
         return dataclasses.replace(point, fields=fields)
+
+
+def _fields(items: list[tuple[str, Any]]) -> dict[str, FieldValue]:
+    """Home Connect's keys and values as fields, leaving out what has no value."""
+    fields: dict[str, FieldValue] = {}
+    for key, raw in items:
+        value = field_value(key, raw)
+        if value is not None:
+            fields[field_name(key)] = value
+    return fields
 
 
 def _load_types(path: Path) -> dict[str, str]:

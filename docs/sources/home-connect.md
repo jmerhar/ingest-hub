@@ -10,6 +10,12 @@ recent points. A stream that ends is opened again, reading the full state again 
 read is `resync_minutes` (15) old, or for an appliance that reconnects: Home Connect allows 1000
 requests a day, and the stream itself costs one.
 
+A read replaces what the source holds for an appliance, since Home Connect stops sending what no
+longer applies rather than clearing it. So when an appliance's operation state changes (a program
+starts, finishes, pauses), its state is read again, at most every five minutes, and the
+whole-state points then repeat only what is true: a finished program's progress and phase, or an
+event such as the program having finished, are written when they happen and not repeated after.
+
 Each appliance type has its table, `home_connect_<type>` (`home_connect_dishwasher`), tagged
 `appliance` with its Home Connect ID. A key becomes the field `<kind>_<name>` in snake case:
 

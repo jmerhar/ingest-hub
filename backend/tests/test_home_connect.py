@@ -1025,3 +1025,92 @@ async def test_signing_in_needs_a_started_login_and_a_readable_token_file(tmp_pa
         harness.state.mkdir(parents=True, exist_ok=True)
         (harness.state / auth.TOKEN_FILE).write_text("{broken")
         assert harness.source.signed_in(harness.state) is False
+
+
+def op(state: str) -> tuple[str, dict]:
+    return (
+        "STATUS",
+        {
+            "haId": HA,
+            "items": [
+                item(
+                    "BSH.Common.Status.OperationState",
+                    f"BSH.Common.EnumType.OperationState.{state}",
+                )
+            ],
+        },
+    )
+
+
+def ticking(harness: Harness, seconds: float) -> None:
+    """Move the harness's clock ``seconds`` forward with every message from the stream."""
+    original = harness.context.succeeded
+
+    def later() -> None:
+        harness.now += seconds
+        original()
+
+    harness.context.succeeded = later
+
+
+async def test_a_changed_operation_state_has_the_state_read_again_and_replaced(tmp_path):
+    fake = FakeHomeConnect()
+    fake.streams = [
+        sse(
+            op("Run"),
+            ("NOTIFY", {"haId": HA, "items": [item("BSH.Common.Option.ProgramProgress", 40)]}),
+            (
+                "EVENT",
+                {
+                    "haId": HA,
+                    "items": [
+                        item(
+                            "Dishcare.Dishwasher.Event.SaltLack",
+                            "BSH.Common.EnumType.EventPresentState.Present",
+                        )
+                    ],
+                },
+            ),
+            ("KEEP-ALIVE", None),
+        )
+    ]
+    async with serving(StubServer(respond=fake)) as server:
+        harness = Harness(tmp_path, server, sample_minutes=1000)
+        ticking(harness, 100)
+        await harness.run()
+    # Read at the start, and again once five minutes had passed since: at the third message.
+    assert len(requests(server, f"/api/homeappliances/{HA}/status")) == 2
+    reread = harness.points[-1]
+    assert reread.timestamp == (NOW + 300) * 1000
+    assert reread.fields["status_door_state"] == "Open"
+    # What Home Connect no longer reports is gone from what the source holds and repeats.
+    for gone in ("option_program_progress", "event_salt_lack", "status_operation_state"):
+        assert gone not in reread.fields
+    assert harness.source._appliances[HA].values == reread.fields
+
+
+async def test_a_burst_of_operation_states_is_read_once(tmp_path):
+    fake = FakeHomeConnect()
+    fake.streams = [
+        sse(op("Run"), op("Finished"), op("Inactive"), ("KEEP-ALIVE", None), ("KEEP-ALIVE", None))
+    ]
+    async with serving(StubServer(respond=fake)) as server:
+        harness = Harness(tmp_path, server, sample_minutes=1000)
+        ticking(harness, 60)
+        await harness.run()
+    # Changes at 1, 2 and 3 minutes, all inside five minutes of the first read: one read when
+    # those are up, at the keep-alive at 5 minutes, and none at the one at 4.
+    assert len(requests(server, f"/api/homeappliances/{HA}/status")) == 2
+    assert harness.points[-1].timestamp == (NOW + 300) * 1000
+    assert harness.source._appliances[HA].stale is False
+
+
+async def test_a_change_long_after_the_last_read_is_read_at_once(tmp_path):
+    fake = FakeHomeConnect()
+    fake.streams = [sse(op("Run"))]
+    async with serving(StubServer(respond=fake)) as server:
+        harness = Harness(tmp_path, server, sample_minutes=1000)
+        ticking(harness, 600)
+        await harness.run()
+    assert len(requests(server, f"/api/homeappliances/{HA}/status")) == 2
+    assert harness.source._appliances[HA].stale is False
