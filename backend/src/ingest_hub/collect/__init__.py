@@ -11,8 +11,9 @@ ingest-hub, so it can move into jigkit unchanged if another application needs it
   points are written.
 - A source that knows how far it has fetched reports it as progress per stream, which the runtime
   writes to the ``ingest_progress`` table in the same batch as the points it covers.
-- A source that works on a timer lists its jobs for a :class:`~ingest_hub.collect.jobs.Schedule`,
-  which runs what is due and reports each job's failures the same way for every source.
+- A source that works on a timer lists its jobs for jigkit's :class:`~jigkit.scheduler.Schedule`,
+  re-exported here, which runs what is due and reports each job's failures through the source's
+  context the same way for every source.
 - A source that imports files from a folder (:class:`~ingest_hub.collect.source.AcceptsFiles`)
   says so, so files can be handed to it directly.
 - A source that needs a person to sign in through a browser
@@ -20,7 +21,8 @@ ingest-hub, so it can move into jigkit unchanged if another application needs it
   elsewhere, and the runtime can restart it at once afterwards (:meth:`Runtime.restart`).
 """
 
-from ingest_hub.collect.jobs import Job, Schedule, wait_or_wake
+from jigkit.scheduler import Job, Schedule, wait_or_wake
+
 from ingest_hub.collect.runtime import Runtime, SourceSpec
 from ingest_hub.collect.source import (
     PROGRESS_TABLE,
