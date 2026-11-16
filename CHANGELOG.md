@@ -3,6 +3,20 @@
 Notable changes to ingest-hub. The format follows [Keep a Changelog](https://keepachangelog.com/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The Frank Energie source reports how far usage was complete when it starts, so a usage stream
+  stuck behind an incomplete day raises a stall alert even after a restart.
+- The Home Connect source reads an appliance's state again when its operation state changes, and
+  a read replaces what it holds, so its whole-state points stop repeating a finished program's
+  progress, phase and events.
+
+### Changed
+
+- The job schedule that timed sources share comes from jigkit 0.19.0.
+
 ## 0.4.1 — 2026-11-15
 
 ### Fixed
