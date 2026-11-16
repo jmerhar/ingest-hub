@@ -203,6 +203,14 @@ class FrankAccount:
             raise FrankAccountError(messages)
         raise AssertionError("unreachable")  # pragma: no cover
 
+    def restore(self, context: SourceContext) -> None:
+        """Report how far usage was complete before a restart, so a stream that stops advancing
+        is noticed even before its next round."""
+        complete = _date(_load(context.state_dir / STATE_FILE).get("usage"))
+        if complete is not None:
+            until = self._midnight(complete + dt.timedelta(days=1)) * 1000
+            context.restore_progress([Progress("usage", until)])
+
     # ------------------------------------------------------------------ the poll
     async def poll(self, context: SourceContext) -> bool:
         """Read everything the login gives, writing each kind as it comes; True when history

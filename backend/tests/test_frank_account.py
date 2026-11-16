@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 from pathlib import Path
@@ -21,7 +22,7 @@ from ingest_hub.adapters.frank.account import (
     FrankAccount,
     FrankAccountError,
 )
-from ingest_hub.collect import SourceContext
+from ingest_hub.collect import Progress, SourceContext
 
 ZONE = dt.timezone(dt.timedelta(hours=1))  # Amsterdam in November
 # 8 Nov 2026, 13:00 in Amsterdam.
@@ -833,3 +834,45 @@ async def test_other_price_errors_are_raised(tmp_path):
     api.answer = answer
     with pytest.raises(FrankAccountError, match="something else"):
         await poll(tmp_path, api, history_days=0)
+
+
+async def test_the_frank_source_restores_how_far_usage_was_complete_at_startup(tmp_path):
+    (tmp_path / STATE_FILE).write_text(json.dumps({"usage": "2026-11-08"}))
+    harness = Harness(tmp_path)
+
+    async def stop(_seconds):
+        raise asyncio.CancelledError
+
+    harness.context.sleep = stop
+    async with httpx2.AsyncClient() as client:
+        account = FrankAccount(
+            client,
+            "http://127.0.0.1:9",
+            EMAIL,
+            PASSWORD,
+            prefix="frank_",
+            timezone="Europe/Amsterdam",
+            history_days=2,
+            vat_rate=0.21,
+        )
+        source = FrankSource(FrankParams(url="http://127.0.0.1:9"), client, account)
+        with pytest.raises(asyncio.CancelledError):
+            await source.run(harness.context)
+    # Restored before any round: the Amsterdam midnight after the last complete day.
+    midnight = dt.datetime(2026, 11, 9, tzinfo=ZoneInfo("Europe/Amsterdam")).timestamp()
+    assert harness.progress[0] == Progress("usage", int(midnight * 1000))
+
+
+def test_nothing_is_restored_before_usage_was_ever_complete(tmp_path):
+    harness = Harness(tmp_path)
+    FrankAccount(
+        httpx2.AsyncClient(),
+        "http://127.0.0.1:9",
+        EMAIL,
+        PASSWORD,
+        prefix="frank_",
+        timezone="Europe/Amsterdam",
+        history_days=2,
+        vat_rate=0.21,
+    ).restore(harness.context)
+    assert harness.progress == []

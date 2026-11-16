@@ -118,6 +118,7 @@ class FrankSource:
         ever, reporting a failed round rather than raising it."""
         jobs = [Job("prices", self._params.poll_hours * 3600, lambda: self.poll(context))]
         if self._account is not None:
+            self._account.restore(context)
             jobs.append(
                 Job(
                     "account",
