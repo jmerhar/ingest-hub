@@ -6,9 +6,11 @@ Gaggenau and the other brands on BSH's platform) through the official
 paired appliances and each connected one's status, settings and programmes, then follows Home
 Connect's event stream, writing each change as it arrives. Every `sample_minutes` (15) it writes
 each appliance's whole state again from what it already knows, so a quiet appliance still has
-recent points. A stream that ends is opened again, reading the full state again only when the last
-read is `resync_minutes` (15) old, or for an appliance that reconnects: Home Connect allows 1000
-requests a day, and the stream itself costs one.
+recent points. A stream that ends, or whose connection drops after it has delivered something, is
+opened again, reading the full state again only when the last read is `resync_minutes` (15) old,
+or for an appliance that reconnects: Home Connect allows 1000 requests a day, and the stream
+itself costs one. A stream that fails before delivering anything counts as a failure and is tried
+again after the source's back-off.
 
 A read replaces what the source holds for an appliance, since Home Connect stops sending what no
 longer applies rather than clearing it. So when an appliance's operation state changes (a program

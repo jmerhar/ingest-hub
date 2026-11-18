@@ -39,6 +39,10 @@ class Unauthorized(ApiError):
     """Home Connect refused the access token."""
 
 
+class StreamBroken(ApiError):
+    """The connection carrying the event stream failed, before or while it was read."""
+
+
 class RateLimited(ApiError):
     """Home Connect asks to wait ``retry_after`` seconds before the next request."""
 
@@ -181,9 +185,8 @@ class HomeConnectApi:
                 async for event in parse_events(response.aiter_lines()):
                     yield event
         except httpx2.HTTPError as error:
-            raise ApiError(
-                f"the event stream broke: {str(error) or type(error).__name__}"
-            ) from error
+            message = f"the event stream broke: {str(error) or type(error).__name__}"
+            raise StreamBroken(message) from error
 
 
 async def parse_events(lines: AsyncIterator[str]) -> AsyncIterator[Event]:
@@ -228,6 +231,7 @@ __all__ = [
     "Event",
     "HomeConnectApi",
     "RateLimited",
+    "StreamBroken",
     "Unauthorized",
     "parse_events",
 ]

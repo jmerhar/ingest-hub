@@ -1114,3 +1114,49 @@ async def test_a_change_long_after_the_last_read_is_read_at_once(tmp_path):
         await harness.run()
     assert len(requests(server, f"/api/homeappliances/{HA}/status")) == 2
     assert harness.source._appliances[HA].stale is False
+
+
+def breaking_stream(*events: Event):
+    """An event stream that delivers ``events``, then loses its connection."""
+
+    async def events_then_break(_self):
+        for event in events:
+            yield event
+        raise api.StreamBroken("the event stream broke: incomplete chunked read")
+
+    return events_then_break
+
+
+async def test_a_stream_dropped_after_delivering_is_opened_again_quietly(tmp_path, monkeypatch):
+    monkeypatch.setattr(HomeConnectApi, "events", breaking_stream(Event("KEEP-ALIVE")))
+    async with serving(StubServer(respond=FakeHomeConnect())) as server:
+        harness = Harness(tmp_path, server)
+        await harness.run()
+    assert harness.problems == []
+    assert harness.sleeps == [source.RECONNECT_SECONDS]
+
+
+async def test_a_stream_that_fails_before_delivering_is_a_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(HomeConnectApi, "events", breaking_stream())
+    async with serving(StubServer(respond=FakeHomeConnect())) as server:
+        harness = Harness(tmp_path, server)
+        with pytest.raises(api.StreamBroken, match="incomplete chunked read"):
+            await harness.source.run(harness.context)
+
+
+async def test_another_request_failing_while_following_is_still_a_failure(tmp_path):
+    fake = FakeHomeConnect()
+    fake.appliances[0]["connected"] = False
+    fake.streams = [sse(("CONNECTED", {"haId": HA}))]
+    fake.answers[f"/api/homeappliances/{HA}/status"] = (500, "{}")
+    async with serving(StubServer(respond=fake)) as server:
+        harness = Harness(tmp_path, server)
+        with pytest.raises(api.ApiError, match="HTTP 500") as raised:
+            await harness.source.run(harness.context)
+    assert not isinstance(raised.value, api.StreamBroken)
+
+
+async def test_an_unreachable_stream_is_a_broken_stream():
+    async with httpx2.AsyncClient() as client:
+        with pytest.raises(api.StreamBroken):
+            await collect(HomeConnectApi(client, "token", "http://127.0.0.1:9").events())

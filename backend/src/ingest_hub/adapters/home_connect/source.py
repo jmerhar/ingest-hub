@@ -4,11 +4,14 @@ When it connects, the source reads the appliances paired with the account and ea
 one's status, settings and programmes, then follows the event stream, writing each change as it
 arrives. Every ``sample_minutes`` it writes each appliance's whole state again, from what it
 already knows, so a quiet appliance still has recent points and the source's heartbeat keeps
-beating. A stream that ends is opened again; the full state is read again then only if the last
-read is ``resync_minutes`` old. The same holds for an appliance that reconnects, and for one the
-stream names that the source does not know yet (read with every other appliance), so neither a
-failing source nor an appliance whose connection keeps dropping can use up Home Connect's daily
-request limit; a newly paired appliance is read at once.
+beating. A stream that ends, or whose connection drops once it has delivered something, is
+opened again; one that fails before delivering anything is a failure, retried after the source's
+back-off, so a connection that keeps failing cannot spend the daily request limit. The full state
+is read again on reopening only if the last read is ``resync_minutes`` old. The same holds for
+an appliance that reconnects, and for one the stream names that the source does not know yet
+(read with every other appliance), so neither a failing source nor an appliance whose connection
+keeps dropping can use up Home Connect's daily request limit; a newly paired appliance is read at
+once.
 
 A read replaces what is known of an appliance rather than adding to it, since Home Connect stops
 sending what no longer applies, such as a finished program's progress, rather than clearing it.
@@ -50,6 +53,7 @@ from ingest_hub.adapters.home_connect.api import (
     Event,
     HomeConnectApi,
     RateLimited,
+    StreamBroken,
     Unauthorized,
 )
 from ingest_hub.adapters.home_connect.auth import (
@@ -241,15 +245,24 @@ class HomeConnectSource:
         logger.info("%s: appliances: %s", self._name, names)
 
     async def _follow(self, context: SourceContext, api: HomeConnectApi, tokens: Tokens) -> None:
-        """Follow the event stream until it ends or the access token is about to expire."""
-        async for event in api.events():
-            context.succeeded()
-            await self._handle(context, api, event)
-            await self._read_stale(context, api)
-            if context.clock() - self._last_sample >= self._params.sample_minutes * 60:
-                await self._sample(context)
-            if not tokens.fresh(context.clock()):
-                return
+        """Follow the event stream until it ends or the access token is about to expire. A stream
+        whose connection drops after it delivered something ends as one Home Connect closes; one
+        that fails before delivering anything is a failure."""
+        delivered = False
+        try:
+            async for event in api.events():
+                delivered = True
+                context.succeeded()
+                await self._handle(context, api, event)
+                await self._read_stale(context, api)
+                if context.clock() - self._last_sample >= self._params.sample_minutes * 60:
+                    await self._sample(context)
+                if not tokens.fresh(context.clock()):
+                    return
+        except StreamBroken as error:
+            if not delivered:
+                raise
+            logger.info("%s: %s; opening it again", self._name, error)
 
     def _due(self, since: float, context: SourceContext) -> bool:
         """Whether a read last made at ``since`` is ``resync_minutes`` old."""
