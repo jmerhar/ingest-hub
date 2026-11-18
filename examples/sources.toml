@@ -238,3 +238,16 @@ destination = "home"
 client_id_file = "/run/secrets/home_connect_client_id"
 # sample_minutes = 15
 # resync_minutes = 15
+
+# Stays from a holiday rental's bookings feed, to split usage by who was staying.
+[sources.rental]
+kind = "stays"
+destination = "home"
+
+[sources.rental.params]
+url = "https://bookings.example/api/stays"
+token_file = "/run/secrets/stays_token"
+timezone = "Europe/Amsterdam"
+# check_in_time = "16:00"
+# check_out_time = "11:00"            # "24:00" for the end of the check-out day
+# poll_minutes = 60

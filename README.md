@@ -112,6 +112,7 @@ progress trails by design (`{ heating = 6 }`). An ongoing problem is repeated ev
 | `alphaess_cloud` | AlphaESS systems' history and daily totals | polls AlphaESS's Open API | a developer account's app ID and secret | [AlphaESS cloud](docs/sources/alphaess.md) |
 | `zaptec` | a Zaptec charger's state and sessions | polls a bridge that holds the Zaptec login | the bridge | [Zaptec](docs/sources/zaptec.md) |
 | `home_connect` | Home Connect appliances: Bosch, Siemens, Neff, … | follows Home Connect's event stream | a registered application, and a sign-in | [Home Connect](docs/sources/home-connect.md) |
+| `stays` | stays from a JSON feed of bookings, such as a holiday rental's | polls the feed | the feed's address, and its token if any | [Stays](docs/sources/stays.md) |
 
 ### Every source
 
