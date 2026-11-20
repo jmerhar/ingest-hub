@@ -41,6 +41,8 @@ def graphql(days: dict[str, object]):
             return 200, json.dumps({"data": None, "errors": [{"message": message}]})
         if isinstance(answer, tuple):
             return answer
+        if isinstance(answer, dict):
+            return 200, json.dumps({"data": {"marketPrices": answer}})
         return 200, json.dumps({"data": {"marketPrices": {"electricityPrices": answer}}})
 
     return respond
@@ -92,6 +94,29 @@ async def test_today_is_written_and_an_unpublished_tomorrow_is_skipped(tmp_path,
     }
     assert all(isinstance(v, float) for v in point.fields.values())
     assert "no prices for 2026-11-03 yet" in caplog.text
+
+
+GAS_ROW = {
+    "from": "2026-11-01T23:00:00.000Z",
+    "till": "2026-11-02T00:00:00.000Z",
+    "marketPrice": 0.30,
+    "marketPriceTax": 0.063,
+    "sourcingMarkupPrice": 0.07986,
+    "energyTaxPrice": 0.7268,
+    "allInPrice": 1.19966,
+}
+
+
+async def test_gas_prices_go_to_their_own_table_unless_it_is_empty(tmp_path):
+    answer = {"electricityPrices": [ROW], "gasPrices": [GAS_ROW]}
+    batches, _ = await poll(tmp_path, {"2026-11-02": answer, "2026-11-03": []})
+    electricity, gas = batches[0]
+    assert electricity.table == "electricity_price"
+    assert gas.table == "gas_price" and gas.tags == (("resolution", "PT60M"),)
+    assert gas.fields["surcharge_incl_vat"] == 0.07986
+    assert gas.fields["total_incl_vat"] == 1.19966
+    batches, _ = await poll(tmp_path, {"2026-11-02": answer, "2026-11-03": []}, gas_table="")
+    assert [p.table for p in batches[0]] == ["electricity_price"]
 
 
 async def test_whole_numbers_are_written_as_floats_and_a_missing_resolution_is_filled(tmp_path):

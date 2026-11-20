@@ -1,14 +1,15 @@
-"""Frank Energie: its public electricity market prices and, with a customer's login, their
+"""Frank Energie: its public electricity and gas prices and, with a customer's login, their
 account's data (see ``account.py``).
 
 Every ``poll_hours`` the source asks the public GraphQL ``marketPrices`` query for today and
-tomorrow (by UTC date) and writes one point per price period, tagged by market and resolution, at
-the period's start. With ``username_file`` and ``password_file`` it also reads the account every
-``account_minutes``. A failed round is reported, and the source carries on with the next one.
+tomorrow (by UTC date) and writes one point per price period at the period's start: electricity to
+``table``, tagged by market and resolution, and gas to ``gas_table`` (unless it is empty), tagged
+by resolution. These are the prices Frank offers new customers. With ``username_file`` and
+``password_file`` it also reads the account every ``account_minutes``. A failed round is
+reported, and the source carries on with the next one.
 
-Each price poll asks for today and tomorrow (by UTC date) and writes one point per price period,
-tagged by market and resolution, at the period's start. Frank publishes tomorrow's prices in the
-afternoon, so until then tomorrow's query finds nothing; that is expected, not an error.
+Frank publishes tomorrow's prices in the afternoon, so until then tomorrow's query finds nothing;
+that is expected, not an error.
 
 Frank reports the spot price and its VAT separately and the surcharge and energy tax including
 VAT. The excluded-VAT parts are derived with one fixed rate, in this order, so the stored values
@@ -44,7 +45,8 @@ QUERY = (
     "query MarketPrices($date:String!,$resolution:PriceResolution!){"
     "marketPrices(date:$date,resolution:$resolution){electricityPrices{"
     "from till resolution marketPrice marketPriceTax sourcingMarkupPrice energyTaxPrice "
-    "allInPrice}}}"
+    "allInPrice}gasPrices{from till resolution marketPrice marketPriceTax sourcingMarkupPrice "
+    "energyTaxPrice allInPrice}}}"
 )
 TIMEOUT_SECONDS = 30.0
 #: Seconds between account rounds while history is still being read.
@@ -66,6 +68,8 @@ class FrankParams(BaseModel):
     table: str = Field("electricity_price", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     #: The ``market`` tag's value.
     market: str = "power"
+    #: Where gas prices go; none are written when empty.
+    gas_table: str = Field("gas_price", pattern=r"^([A-Za-z_][A-Za-z0-9_]*)?$")
     vat_rate: float = Field(0.21, ge=0, lt=1)
     poll_hours: float = Field(6, gt=0)
     #: Days from this date on are asked for at 15-minute resolution, earlier ones hourly.
@@ -169,11 +173,23 @@ class FrankSource:
             if all(NOT_PUBLISHED in str(e.get("message", "")) for e in errors):
                 return []
             raise FrankError(f"Frank refused the query for {day.isoformat()}: {messages}")
-        rows = ((answer.get("data") or {}).get("marketPrices") or {}).get("electricityPrices")
-        return [self.point(row, resolution) for row in rows or []]
+        prices = (answer.get("data") or {}).get("marketPrices") or {}
+        market = ("market", self._params.market)
+        points = [
+            self.point(self._params.table, row, resolution, market)
+            for row in prices.get("electricityPrices") or []
+        ]
+        if self._params.gas_table:
+            points += [
+                self.point(self._params.gas_table, row, "PT60M")
+                for row in prices.get("gasPrices") or []
+            ]
+        return points
 
-    def point(self, row: dict[str, Any], resolution: str) -> Point:
-        """One price period as a point."""
+    def point(
+        self, table: str, row: dict[str, Any], resolution: str, *tags: tuple[str, str]
+    ) -> Point:
+        """One price period as a point in ``table``, tagged ``tags`` and its resolution."""
         rate = self._params.vat_rate
         spot = float(row["marketPrice"])
         spot_tax = float(row["marketPriceTax"])
@@ -183,8 +199,8 @@ class FrankSource:
         energy_tax_excl = energy_tax / (1 + rate)
         start = datetime.fromisoformat(str(row["from"]).replace("Z", "+00:00"))
         return Point(
-            self._params.table,
-            (("market", self._params.market), ("resolution", row.get("resolution") or resolution)),
+            table,
+            (*tags, ("resolution", row.get("resolution") or resolution)),
             int(start.timestamp()),
             {
                 "vat_rate": float(rate),

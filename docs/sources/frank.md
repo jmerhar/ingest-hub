@@ -15,6 +15,10 @@ hourly before. One point per period in `table` (`electricity_price`), at the per
 | `total_incl_vat` | Frank's all-in price |
 | `vat_rate` | the configured rate (0.21) |
 
+Gas prices go to `gas_table` (`gas_price`; set it to `""` to leave them out), hourly, tag
+`resolution`, with the same fields. Both tables hold the prices Frank offers new customers; a
+customer's own contract can differ (see `frank_price` below).
+
 Tomorrow's prices appear in the afternoon; until then that day is skipped and logged, not an
 error.
 
