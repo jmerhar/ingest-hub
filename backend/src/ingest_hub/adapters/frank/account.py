@@ -13,8 +13,10 @@ writes, with ``table_prefix`` (``frank_``) before each table:
   one. Gas is written as the contract gives it.
 - ``usage``: what Frank bills per hour, tagged ``carrier`` (``electricity``, ``gas``, ``feed_in``):
   ``usage`` (kWh or m³) and ``costs`` (EUR). Frank has a day's figures a day or two late and can
-  report a day before every hour is in, so a day counts as complete only once each carrier that
-  has hours has all of them, and is read again until it is; one still incomplete after
+  report a day before every hour is in, so a day counts as complete only once electricity has
+  all its hours and some usage, and each other carrier that has hours has all of them; it is
+  read again until then. Frank can have gas for a day before electricity, and can first give
+  electricity's hours as zeros, so neither makes a day complete; one still incomplete after
   ``GIVE_UP_DAYS`` is taken as it is (reported when it has some hours, silently when it has none,
   as before the meter's first readings). The stream ``usage`` in ``ingest_progress`` says how far
   usage is complete.
@@ -381,14 +383,17 @@ class FrankAccount:
         return False
 
     def _usage_points(self, usage: dict[str, Any], day: dt.date) -> tuple[list[Point], bool]:
-        """A day's hourly points, and whether every carrier with hours has all of them."""
+        """A day's hourly points, and whether the day is complete: electricity has all its hours
+        and some usage, and every other carrier with hours has all of them."""
         hours = round((self._midnight(day + dt.timedelta(days=1)) - self._midnight(day)) / 3600)
-        points, whole, any_hours = [], True, False
+        points, whole = [], True
         for key, carrier in CARRIERS.items():
             items = [i for i in (usage.get(key) or {}).get("items") or [] if i.get("from")]
+            if carrier == "electricity":
+                used = sum(_num(i.get("usage")) or 0 for i in items)
+                whole = whole and used > 0
             if not items:
                 continue
-            any_hours = True
             whole = whole and len({i["from"] for i in items}) >= hours
             for item in items:
                 points.append(
@@ -399,7 +404,7 @@ class FrankAccount:
                         {"usage": _num(item.get("usage")), "costs": _num(item.get("costs"))},
                     )
                 )
-        return points, whole and any_hours
+        return points, whole
 
     # ------------------------------------------------------------------ month
     async def _month(self, context: SourceContext, site: str) -> None:

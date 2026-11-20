@@ -405,6 +405,27 @@ async def test_an_incomplete_usage_day_holds_the_cursor_until_it_fills_in(tmp_pa
     ]
 
 
+async def test_a_day_is_not_complete_until_electricity_has_its_usage(tmp_path):
+    api = Frank()
+    gas = {"items": hours("2026-11-06", 0.1)}
+    api.usage = {
+        # Gas whole, electricity not given yet.
+        "2026-11-06": {"gas": gas},
+        "2026-11-07": {"electricity": {"items": hours("2026-11-07", 1.0)}},
+    }
+    await poll(tmp_path, api)
+    assert "usage" not in json.loads((tmp_path / STATE_FILE).read_text())
+    # Electricity's hours given as zeros first.
+    api.usage["2026-11-06"] = {"gas": gas, "electricity": {"items": hours("2026-11-06", 0.0)}}
+    await poll(tmp_path, api)
+    assert "usage" not in json.loads((tmp_path / STATE_FILE).read_text())
+    api.usage["2026-11-06"] = {"gas": gas, "electricity": {"items": hours("2026-11-06", 1.0)}}
+    harness = await poll(tmp_path, api)
+    assert json.loads((tmp_path / STATE_FILE).read_text())["usage"] == "2026-11-07"
+    written = {(dict(p.tags)["carrier"], p.fields["usage"]) for p in harness.rows("frank_usage")}
+    assert ("electricity", 1.0) in written and ("electricity", 0.0) not in written
+
+
 async def test_a_day_that_never_fills_in_is_taken_as_it_is_after_a_while(tmp_path):
     api = Frank()
     old = (dt.date(2026, 11, 8) - dt.timedelta(days=GIVE_UP_DAYS + 1)).isoformat()
