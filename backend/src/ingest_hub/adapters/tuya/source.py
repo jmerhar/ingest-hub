@@ -99,6 +99,8 @@ class _Known:
 
     device: Device
     specs: dict[str, CodeSpec]
+    #: The name of the device's home, for the ``home`` tag; empty when it has none.
+    home: str = ""
 
 
 @dataclass
@@ -184,6 +186,15 @@ class TuyaSource:
         """
         wanted = set(self._params.devices) if self._params.devices else None
         devices = [d for d in await self._client.devices() if wanted is None or d.id in wanted]
+        homes = {}
+        for home_id in sorted({d.home for d in devices if d.home}):
+            try:
+                homes[home_id] = await self._client.home_name(home_id) or home_id
+            except TuyaError as error:
+                logger.warning(
+                    "Tuya home %s: no name, so it is tagged by its id: %s", home_id, error
+                )
+                homes[home_id] = home_id
         known = []
         for device in devices:
             try:
@@ -191,7 +202,7 @@ class TuyaSource:
             except TuyaError as error:
                 logger.error("Tuya device %s: no specification: %s", device.id, error)
                 specs = {}
-            known.append(_Known(device, specs))
+            known.append(_Known(device, specs, homes.get(device.home, "")))
         self._known = known
         logger.info("Tuya: %d device(s)", len(known))
 
@@ -224,6 +235,7 @@ class TuyaSource:
             name=device.name,
             specs=known.specs,
             unscaled=self._unscaled,
+            home=known.home,
         )
         if built.collisions:
             context.problem(f"device {device.id}: {built.collisions} colliding report(s)")

@@ -69,6 +69,8 @@ class Device:
     name: str
     category: str
     online: bool
+    #: The id of the home (space) the device is bound to in the app; empty when it has none.
+    home: str = ""
 
 
 @dataclass(frozen=True)
@@ -160,11 +162,17 @@ class TuyaClient:
                         name=name,
                         category=str(item.get("category") or "unknown"),
                         online=bool(item.get("isOnline")),
+                        home=str(item.get("bindSpaceId") or ""),
                     )
                 )
                 last_id = str(item["id"])
             if len(page) < MAX_PAGE:
                 return devices
+
+    async def home_name(self, home_id: str) -> str:
+        """The name a home has in the app; empty when it has none."""
+        result = await self.get(f"/v1.0/homes/{quote(home_id, safe='')}")
+        return str((result or {}).get("name") or "").strip()
 
     async def specification(self, device_id: str) -> list[dict[str, Any]]:
         """The status codes a device reports, each with its type and value range."""

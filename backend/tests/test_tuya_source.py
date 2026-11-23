@@ -42,6 +42,11 @@ class FakeClient:
         self.discoveries += 1
         return self.devices_list
 
+    async def home_name(self, home_id: str) -> str:
+        if home_id == "unnamed-fails":
+            raise TuyaError("permission deny", 1106)
+        return {"h1": "Duivendrecht", "h2": "Magoito"}.get(home_id, "")
+
     async def specification(self, device_id: str) -> list[dict]:
         if device_id == "spec-fails":
             raise TuyaError("spec unavailable", 1106)
@@ -320,3 +325,31 @@ async def test_a_device_whose_specification_fails_does_not_stop_discovery(tmp_pa
     await poll(TuyaSource(params(), client), harness, state)
     assert set(state.cursors) == {"plug-1"}
     assert any("spec-fails" in p and "no status codes" in p for p in harness.problems)
+
+
+async def test_points_are_tagged_by_their_home(tmp_path, caplog):
+    devices = [
+        Device("plug-1", "Kitchen", "cz", True, home="h1"),
+        Device("plug-3", "Kiln", "cz", True, home="h2"),
+        Device("plug-4", "Loose", "cz", True),
+        Device("plug-5", "Nameless home", "cz", True, home="h9"),
+        Device("plug-6", "Hidden home", "cz", True, home="unnamed-fails"),
+    ]
+    reports = {d.id: [Report("cur_voltage", "2300", NOW_MS - 1000)] for d in devices}
+    harness = Harness(tmp_path)
+    await poll(TuyaSource(params(), FakeClient(devices, reports)), harness, _State())
+    tags = {
+        dict(p.tags)["device_id"]: dict(p.tags).get("home")
+        for batch in harness.batches
+        for p in batch
+        if p.table == "tuya_cz"
+    }
+    # A home without a name, or whose name cannot be read, is tagged by its id.
+    assert tags == {
+        "plug-1": "Duivendrecht",
+        "plug-3": "Magoito",
+        "plug-4": None,
+        "plug-5": "h9",
+        "plug-6": "unnamed-fails",
+    }
+    assert "Tuya home unnamed-fails: no name" in caplog.text

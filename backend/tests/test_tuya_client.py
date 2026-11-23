@@ -183,7 +183,7 @@ async def test_devices_are_paged_by_the_last_id():
         {"id": f"d{n}", "name": f"Plug {n}", "category": "cz", "isOnline": True} for n in range(20)
     ]
     second = [
-        {"id": "d20", "name": "dev", "customName": " Custom ", "category": "cs"},
+        {"id": "d20", "name": "dev", "customName": " Custom ", "category": "cs", "bindSpaceId": 61},
         {"id": "d21", "name": "", "isOnline": False},
     ]
     stub = StubServer(
@@ -196,10 +196,29 @@ async def test_devices_are_paged_by_the_last_id():
 
     assert len(devices) == 22
     assert devices[0].name == "Plug 0" and devices[0].online
-    assert devices[20].name == "Custom" and devices[20].category == "cs"
+    assert (
+        devices[20].name == "Custom" and devices[20].category == "cs" and devices[20].home == "61"
+    )
+    assert devices[0].home == ""
     assert devices[21].category == "unknown" and not devices[21].online
     pages = [r.query for r in stub.requests if r.path == "/v2.0/cloud/thing/device"]
     assert pages == [{"page_size": "20"}, {"page_size": "20", "last_id": "d19"}]
+
+
+async def test_a_home_is_named_as_in_the_app():
+    stub = StubServer(
+        respond=router(
+            {
+                "/v1.0/token": ok(TOKEN),
+                "/v1.0/homes/61": ok({"home_id": 61, "name": " Duivendrecht "}),
+                "/v1.0/homes/62": ok({"home_id": 62}),
+            }
+        )
+    )
+    async with serving(stub), httpx2.AsyncClient() as http:
+        client = TuyaClient("id", "secret", stub.url, http, clock=Clock())
+        assert await client.home_name("61") == "Duivendrecht"
+        assert await client.home_name("62") == ""
 
 
 async def test_specification_returns_the_status_codes():

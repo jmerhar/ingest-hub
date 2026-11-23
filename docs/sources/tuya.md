@@ -5,7 +5,9 @@ keys in `access_id_file` and `access_secret_file`.
 
 One table per device category, `table_prefix` + category (`tuya_cz` for plugs, `tuya_cs` for
 dehumidifiers), at millisecond precision from Tuya's own event times. Tags `device_id` (exactly
-as Tuya gives it) and `category`; a field `name` holds the device's name at the time. One field per
+as Tuya gives it), `category`, and `home`, the name of the home the device is in within the app
+(its id when the home has no name or the project may not read it; no tag for a device in no
+home). A field `name` holds the device's name at the time. One field per
 status code, typed from the device's specification:
 
 | Specification | Stored as |

@@ -105,8 +105,10 @@ def build_points(
     name: str,
     specs: Mapping[str, CodeSpec],
     unscaled: frozenset[str],
+    home: str = "",
 ) -> Built:
-    """One point per moment at which the device reported, tagged by device and category.
+    """One point per moment at which the device reported, tagged by device and category, and by
+    home when it has one.
 
     Reports of several codes at the same millisecond share a point. Re-fetching the same reports
     gives the same points, which overwrite themselves in InfluxDB.
@@ -126,7 +128,7 @@ def build_points(
             device_id,
             collisions,
         )
-    tags = (("device_id", device_id), ("category", category))
+    tags = (("device_id", device_id), ("category", category)) + ((("home", home),) if home else ())
     points = [
         Point(
             table,
