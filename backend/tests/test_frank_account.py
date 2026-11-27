@@ -449,6 +449,33 @@ async def test_a_gas_day_one_hour_short_is_complete_but_not_two_or_electricity(t
         assert "usage" not in json.loads((tmp_path / STATE_FILE).read_text())
 
 
+async def test_a_day_waits_for_every_carrier_the_site_is_supplied(tmp_path):
+    api = Frank()
+    api.sites[0]["segments"] = ["ELECTRICITY", "GAS"]
+    power = {"items": hours("2026-11-06", 1.0)}
+    nxt = {
+        "electricity": {"items": hours("2026-11-07", 1.0)},
+        "gas": {"items": hours("2026-11-07", 0.0)},
+    }
+    # Electricity in before gas.
+    api.usage = {"2026-11-06": {"electricity": power}, "2026-11-07": nxt}
+    await poll(tmp_path, api)
+    assert "usage" not in json.loads((tmp_path / STATE_FILE).read_text())
+    api.usage["2026-11-06"] = {"electricity": power, "gas": {"items": hours("2026-11-06", 0.1)}}
+    harness = await poll(tmp_path, api)
+    assert json.loads((tmp_path / STATE_FILE).read_text())["usage"] == "2026-11-07"
+    assert any(dict(p.tags)["carrier"] == "gas" for p in harness.rows("frank_usage"))
+    # A site no longer supplied gas completes on electricity alone.
+    (tmp_path / STATE_FILE).unlink()
+    api.sites[0]["segments"] = ["ELECTRICITY"]
+    api.usage = {
+        "2026-11-06": {"electricity": power},
+        "2026-11-07": {"electricity": nxt["electricity"]},
+    }
+    await poll(tmp_path, api)
+    assert json.loads((tmp_path / STATE_FILE).read_text())["usage"] == "2026-11-07"
+
+
 async def test_a_day_that_never_fills_in_is_taken_as_it_is_after_a_while(tmp_path):
     api = Frank()
     old = (dt.date(2026, 11, 8) - dt.timedelta(days=GIVE_UP_DAYS + 1)).isoformat()

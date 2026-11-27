@@ -14,10 +14,11 @@ writes, with ``table_prefix`` (``frank_``) before each table:
 - ``usage``: what Frank bills per hour, tagged ``carrier`` (``electricity``, ``gas``, ``feed_in``):
   ``usage`` (kWh or m³) and ``costs`` (EUR). Frank has a day's figures a day or two late and can
   report a day before every hour is in, so a day counts as complete only once electricity has
-  all its hours and some usage, and each other carrier that has hours lacks at most one (Frank
-  leaves out a gas meter reading now and then, around midnight, and never fills it in); it is
-  read again until then. Frank can have gas for a day before electricity, and can first give
-  electricity's hours as zeros, so neither makes a day complete; one still incomplete after
+  all its hours and some usage, every carrier the site is supplied (its ``segments``) has hours,
+  and each carrier other than electricity lacks at most one (Frank leaves out a gas meter reading
+  now and then, around midnight, and never fills it in); it is read again until then. Frank can
+  have gas for a day before electricity or after it, and can first give electricity's hours as
+  zeros, so none of these makes a day complete; one still incomplete after
   ``GIVE_UP_DAYS`` is taken as it is (reported when it has some hours, silently when it has none,
   as before the meter's first readings). The stream ``usage`` in ``ingest_progress`` says how far
   usage is complete.
@@ -79,7 +80,9 @@ LOGIN = (
     "mutation Login($email: String!, $password: String!) { "
     "login(email: $email, password: $password) { authToken } }"
 )
-SITES = "query { userSites { reference deliveryStartDate lastMeterReadingDate } }"
+SITES = "query { userSites { reference deliveryStartDate lastMeterReadingDate segments } }"
+#: The carriers a site's ``segments`` say it is supplied, which a complete day must have.
+SEGMENTS = {"ELECTRICITY": "electricity", "GAS": "gas"}
 PRICE_FIELDS = (
     "from till resolution marketPrice marketPriceTax consumptionSourcingMarkupPrice energyTax "
     "allInPrice perUnit"
@@ -366,7 +369,7 @@ class FrankAccount:
             read += fresh
             data = await self.query(context, USAGE, date=day.isoformat(), site=site["reference"])
             usage = data.get("periodUsageAndCosts") or {}
-            points, whole = self._usage_points(usage, day)
+            points, whole = self._usage_points(usage, day, _supplied(site))
             stale = (today - day).days > GIVE_UP_DAYS
             if not whole and stale and points:
                 context.problem(f"usage for {day} is still incomplete; taking it as it is")
@@ -387,10 +390,12 @@ class FrankAccount:
             day += dt.timedelta(days=1)
         return False
 
-    def _usage_points(self, usage: dict[str, Any], day: dt.date) -> tuple[list[Point], bool]:
+    def _usage_points(
+        self, usage: dict[str, Any], day: dt.date, supplied: frozenset[str]
+    ) -> tuple[list[Point], bool]:
         """A day's hourly points, and whether the day is complete: electricity has all its hours
-        and some usage, and every other carrier with hours lacks at most
-        ``MISSING_HOURS_ALLOWED`` of them."""
+        and some usage, every carrier the site is ``supplied`` has hours, and every carrier other
+        than electricity with hours lacks at most ``MISSING_HOURS_ALLOWED`` of them."""
         hours = round((self._midnight(day + dt.timedelta(days=1)) - self._midnight(day)) / 3600)
         points, whole = [], True
         for key, carrier in CARRIERS.items():
@@ -399,6 +404,7 @@ class FrankAccount:
                 used = sum(_num(i.get("usage")) or 0 for i in items)
                 whole = whole and used > 0
             if not items:
+                whole = whole and carrier not in supplied
                 continue
             allowed = 0 if carrier == "electricity" else MISSING_HOURS_ALLOWED
             whole = whole and len({i["from"] for i in items}) >= hours - allowed
@@ -538,6 +544,14 @@ class FrankAccount:
             else:
                 prefix_open = False
             day += dt.timedelta(days=1)
+
+
+def _supplied(site: dict[str, Any]) -> frozenset[str]:
+    """The carriers the site is supplied, from its ``segments``; electricity when it has none."""
+    segments = site.get("segments")
+    if not segments:
+        return frozenset({"electricity"})
+    return frozenset(SEGMENTS[s] for s in segments if s in SEGMENTS)
 
 
 def _messages(answer: dict[str, Any]) -> str:

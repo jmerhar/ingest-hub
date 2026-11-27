@@ -38,9 +38,10 @@ from `history_days` (60) back (not before the site's delivery start), battery an
 from the device's creation; each round reads at most a month of each, and while history remains
 the next round follows a minute later. Frank has a
 day's usage a day or two late and can report it before every hour is in, so a day is read again
-until electricity has all its hours and some usage and every other carrier with hours lacks at most
-one (Frank leaves out a gas meter reading now and then, around midnight, and never fills it in),
-or for 7 days, after which it is taken as it is
+until electricity has all its hours and some usage, every carrier the site is supplied (its
+`segments`, such as gas) has hours, and each carrier other than electricity lacks at most one
+(Frank leaves out a gas meter reading now and then, around midnight, and never fills it in), or
+for 7 days, after which it is taken as it is
 and reported; `ingest_progress` stream `usage` says how far usage is complete. `site` picks one of
 the account's sites; the first by default. A failed round
 of prices or account data is reported, and the source carries on with the next.
