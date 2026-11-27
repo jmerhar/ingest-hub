@@ -426,6 +426,29 @@ async def test_a_day_is_not_complete_until_electricity_has_its_usage(tmp_path):
     assert ("electricity", 1.0) in written and ("electricity", 0.0) not in written
 
 
+async def test_a_gas_day_one_hour_short_is_complete_but_not_two_or_electricity(tmp_path):
+    api = Frank()
+    power = {"items": hours("2026-11-06", 1.0)}
+    api.usage = {
+        "2026-11-06": {"electricity": power, "gas": {"items": hours("2026-11-06", 0.1, count=23)}},
+        "2026-11-07": {"electricity": {"items": hours("2026-11-07", 1.0)}},
+    }
+    await poll(tmp_path, api)
+    assert json.loads((tmp_path / STATE_FILE).read_text())["usage"] == "2026-11-07"
+
+    for day, usage in (
+        (
+            "2026-11-06",
+            {"electricity": power, "gas": {"items": hours("2026-11-06", 0.1, count=22)}},
+        ),
+        ("2026-11-06", {"electricity": {"items": hours("2026-11-06", 1.0, count=23)}}),
+    ):
+        (tmp_path / STATE_FILE).unlink()
+        api.usage = {day: usage, "2026-11-07": {"electricity": {"items": hours("2026-11-07", 1.0)}}}
+        await poll(tmp_path, api)
+        assert "usage" not in json.loads((tmp_path / STATE_FILE).read_text())
+
+
 async def test_a_day_that_never_fills_in_is_taken_as_it_is_after_a_while(tmp_path):
     api = Frank()
     old = (dt.date(2026, 11, 8) - dt.timedelta(days=GIVE_UP_DAYS + 1)).isoformat()

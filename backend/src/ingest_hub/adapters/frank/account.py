@@ -14,7 +14,8 @@ writes, with ``table_prefix`` (``frank_``) before each table:
 - ``usage``: what Frank bills per hour, tagged ``carrier`` (``electricity``, ``gas``, ``feed_in``):
   ``usage`` (kWh or m³) and ``costs`` (EUR). Frank has a day's figures a day or two late and can
   report a day before every hour is in, so a day counts as complete only once electricity has
-  all its hours and some usage, and each other carrier that has hours has all of them; it is
+  all its hours and some usage, and each other carrier that has hours lacks at most one (Frank
+  leaves out a gas meter reading now and then, around midnight, and never fills it in); it is
   read again until then. Frank can have gas for a day before electricity, and can first give
   electricity's hours as zeros, so neither makes a day complete; one still incomplete after
   ``GIVE_UP_DAYS`` is taken as it is (reported when it has some hours, silently when it has none,
@@ -65,6 +66,10 @@ SPACING = 0.4
 TIMEOUT = 30.0
 #: Days after which a day Frank still reports incomplete is taken as it is.
 GIVE_UP_DAYS = 7
+#: Hours a carrier other than electricity may lack and still count as whole: Frank leaves out a gas
+#: meter reading now and then, around midnight, and never fills it in; the usage around it is in
+#: the next hour.
+MISSING_HOURS_ALLOWED = 1
 #: Days after which a battery or heating day counts as final whatever its status says.
 SETTLED_DAYS = 3
 #: Days of history each round reads at most per kind, so a long backfill is spread over rounds.
@@ -384,7 +389,8 @@ class FrankAccount:
 
     def _usage_points(self, usage: dict[str, Any], day: dt.date) -> tuple[list[Point], bool]:
         """A day's hourly points, and whether the day is complete: electricity has all its hours
-        and some usage, and every other carrier with hours has all of them."""
+        and some usage, and every other carrier with hours lacks at most
+        ``MISSING_HOURS_ALLOWED`` of them."""
         hours = round((self._midnight(day + dt.timedelta(days=1)) - self._midnight(day)) / 3600)
         points, whole = [], True
         for key, carrier in CARRIERS.items():
@@ -394,7 +400,8 @@ class FrankAccount:
                 whole = whole and used > 0
             if not items:
                 continue
-            whole = whole and len({i["from"] for i in items}) >= hours
+            allowed = 0 if carrier == "electricity" else MISSING_HOURS_ALLOWED
+            whole = whole and len({i["from"] for i in items}) >= hours - allowed
             for item in items:
                 points.append(
                     self._point(
